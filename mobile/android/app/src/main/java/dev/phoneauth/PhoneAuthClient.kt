@@ -6,6 +6,7 @@ import android.content.Context
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Base64
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -350,6 +351,9 @@ class PhoneAuthClient(
                 }
             }
         } catch (e: Exception) {
+            // Cancelamento entra aqui junto com o resto, e é o que se quer: a
+            // sessão termina normalmente, o supervisor vê que não está mais
+            // ativo logo em seguida e sai sem publicar estado nenhum.
             reason = e.message ?: "conexão perdida"
         }
 

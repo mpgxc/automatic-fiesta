@@ -13,6 +13,19 @@ uso: phoneauthctl <comando>
   pair                pareia um novo celular (exige sudo)
   revoke <id>         revoga um dispositivo, mantendo o histórico (exige sudo)
   remove <id>         apaga um dispositivo do registro (exige sudo)
+
+  rotate              mostra o estado da rotação da identidade TLS
+  rotate begin        gera uma identidade nova e anuncia aos celulares (exige sudo)
+       --compromised  a chave antiga vazou: troca na hora, sem janela e sem
+                      graça. TODOS os dispositivos terão que parear de novo.
+  rotate commit       passa a usar a identidade anunciada (exige sudo)
+       --force        comita antes da janela fechar ou com dispositivos ainda
+                      sem confirmar — eles ficarão trancados para fora
+  rotate abort        descarta a rotação anunciada (exige sudo)
+  rotate qr           mostra o anúncio assinado como QR, para o celular que
+                      ficou fora do ar a janela inteira
+
+Desenho e trade-offs da rotação: docs/rotacao-de-identidade.md
 """
 
 // MARK: - Transporte
