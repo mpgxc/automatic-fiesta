@@ -393,12 +393,12 @@ final class PhoneAuthClient: ObservableObject {
     /// `App` e vive tanto quanto o processo.
     private func observeAppLifecycle() {
         let center = NotificationCenter.default
-        center.addObserver(forName: UIApplication.didEnterBackgroundNotification,
-                           object: nil, queue: .main) { [weak self] _ in
+        _ = center.addObserver(forName: UIApplication.didEnterBackgroundNotification,
+                               object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.enterBackground() }
         }
-        center.addObserver(forName: UIApplication.willEnterForegroundNotification,
-                           object: nil, queue: .main) { [weak self] _ in
+        _ = center.addObserver(forName: UIApplication.willEnterForegroundNotification,
+                               object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.enterForeground() }
         }
     }

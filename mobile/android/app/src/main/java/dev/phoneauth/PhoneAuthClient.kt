@@ -90,6 +90,8 @@ class PhoneAuthClient(
 
     private val appContext = context?.applicationContext
     private val discovery = appContext?.let { NsdDiscovery(it) }
+    private val addressCache =
+        appContext?.getSharedPreferences("dev.phoneauth.address", Context.MODE_PRIVATE)
 
     // Tocados pela thread de UI (connect/disconnect, ciclo de vida) e pela
     // corrotina de IO ao mesmo tempo.
@@ -165,6 +167,20 @@ class PhoneAuthClient(
     }
 
     companion object {
+        /** Tudo é LAN aqui; esperar mais que isto por um candidato é só atrasar o próximo. */
+        private const val CONNECT_TIMEOUT_MS = 4_000
+
+        /** Pareamento espera o humano confirmar o SAS no Mac, então a mão é mais leve. */
+        private const val PAIRING_TIMEOUT_MS = 10_000
+
+        private const val KEEPALIVE_MS = 30_000L
+        private const val SESSION_READ_TIMEOUT_MS = 90_000
+        private const val BACKOFF_BASE_MS = 1_000L
+        private const val BACKOFF_CAP_MS = 30_000L
+
+        /** Abaixo disto a sessão não conta como saudável para zerar o backoff. */
+        private const val HEALTHY_SESSION_MS = 10_000L
+
         fun openPinnedSocket(host: String, port: Int, spkiHex: String, timeoutMs: Int = 10_000): SSLSocket =
             openPinnedSocket(InetSocketAddress(host, port), host, spkiHex, timeoutMs)
 
@@ -208,28 +224,270 @@ class PhoneAuthClient(
 
     // MARK: - Conexão
 
+    /**
+     * Passa a manter a conexão com [peer] de pé: tenta, e se cair tenta de
+     * novo, com backoff. Chamar de novo (o botão "Reconectar") zera o backoff e
+     * força uma tentativa imediata.
+     */
     fun connect(peer: Peer) {
-        disconnect()
         this.peer = peer
-        _state.value = State.Connecting
-
-        scope.launch(Dispatchers.IO) {
-            try {
-                val ssl = openPinnedSocket(peer.host, peer.port, peer.spki)
-                socket = ssl
-                output = ssl.outputStream
-                readLoop(DataInputStream(ssl.inputStream))
-            } catch (e: Exception) {
-                _state.value = State.Failed(e.message ?: "falha na conexão")
-            }
-        }
+        startSupervisor(peer)
     }
 
+    /**
+     * Para de vez e **esquece o alvo** — é o que o "Esquecer este Mac" precisa.
+     * Sem esquecer, uma volta ao primeiro plano ressuscitaria a conexão com um
+     * Mac que o usuário acabou de desparear.
+     */
     fun disconnect() {
+        peer = null
+        stopSupervisor()
+        _state.value = State.Idle
+    }
+
+    private fun startSupervisor(peer: Peer) {
+        stopSupervisor()
+        val generation = supervisorGeneration.incrementAndGet()
+        _state.value = State.Connecting
+        supervisor = scope.launch(Dispatchers.IO) { supervise(peer, generation) }
+    }
+
+    private fun stopSupervisor() {
+        supervisorGeneration.incrementAndGet()
+        supervisor?.cancel()
+        supervisor = null
+        // Fechar o socket na mão não é redundante com o cancel: o `readFully`
+        // está parado numa chamada bloqueante, e cancelamento de corrotina não
+        // interrompe I/O de socket. É o close que estoura a leitura e deixa a
+        // corrotina perceber que foi cancelada.
+        closeSocket()
+    }
+
+    private fun closeSocket() {
         runCatching { socket?.close() }
         socket = null
         output = null
+        currentTarget = null
+        sessionAuthenticated = false
+        // Pedido pendente não sobrevive à sessão: a resposta iria para um socket
+        // morto e o usuário teria encostado o dedo à toa.
+        _pending.value = null
+    }
+
+    private suspend fun CoroutineScope.supervise(peer: Peer, generation: Int) {
+        var attempt = 0
+        while (isActive) {
+            publish(generation, State.Connecting)
+
+            val startedAt = SystemClock.elapsedRealtime()
+            val outcome = runSession(peer)
+            if (!isActive) return
+
+            // O backoff só zera depois de uma sessão que de fato viveu. Se o Mac
+            // aceita o TLS e derruba logo em seguida — dispositivo revogado, por
+            // exemplo — zerar aqui viraria martelada de segundo em segundo para
+            // sempre.
+            val lasted = SystemClock.elapsedRealtime() - startedAt
+            if (outcome.authenticated && lasted >= HEALTHY_SESSION_MS) attempt = 0
+
+            val wait = backoffMillis(attempt)
+            attempt++
+            publish(generation, State.Failed("${outcome.reason} · nova tentativa em ${wait / 1000}s"))
+            delay(wait)
+        }
+    }
+
+    /** 1s, 2s, 4s... com teto de 30s. */
+    private fun backoffMillis(attempt: Int): Long =
+        minOf(BACKOFF_BASE_MS shl minOf(attempt, 16), BACKOFF_CAP_MS)
+
+    private fun publish(generation: Int, state: State) {
+        if (generation == supervisorGeneration.get()) _state.value = state
+    }
+
+    /** Abre uma sessão, roda até ela morrer, e conta como foi. */
+    private suspend fun CoroutineScope.runSession(peer: Peer): SessionOutcome {
+        val opened = try {
+            openBestEffort(peer)
+        } catch (cancelled: CancellationException) {
+            // Mandaram parar no meio da procura. Não é sinal de que o endereço
+            // guardado está ruim, então ele fica.
+            throw cancelled
+        } catch (e: Exception) {
+            // Ninguém respondeu: o endereço lembrado, se havia, está velho.
+            forgetRememberedAddress()
+            return SessionOutcome(false, e.message ?: "não foi possível alcançar ${peer.name}")
+        }
+
+        val ssl = opened.first
+        currentTarget = opened.second
+        socket = ssl
+        output = ssl.outputStream
+        sessionAuthenticated = false
+
+        // Publicar o socket antes de checar o cancelamento é de propósito: se
+        // mandaram parar bem no meio disto, ou o `closeSocket` de lá já viu
+        // este socket, ou fechamos aqui. Sem essa ordem sobraria uma conexão
+        // aberta em background que ninguém mais tem como fechar.
+        if (!isActive) {
+            closeSocket()
+            return SessionOutcome(false, "cancelado")
+        }
+
+        var reason = "conexão encerrada pelo Mac"
+        try {
+            // Silêncio prolongado é conexão morta que ninguém avisou (Mac
+            // dormiu, Wi-Fi trocou de AP). Sem prazo de leitura o app ficaria
+            // "conectado" para sempre num socket que não entrega mais nada, e a
+            // reconexão nunca dispararia. 90s é o mesmo limite que o Mac usa.
+            ssl.soTimeout = SESSION_READ_TIMEOUT_MS
+            coroutineScope {
+                val keepaliveJob = launch { keepalive() }
+                try {
+                    readLoop(DataInputStream(ssl.inputStream))
+                } finally {
+                    keepaliveJob.cancel()
+                }
+            }
+        } catch (e: Exception) {
+            reason = e.message ?: "conexão perdida"
+        }
+
+        val authenticated = sessionAuthenticated
+        closeSocket()
+        return SessionOutcome(authenticated, reason)
+    }
+
+    /**
+     * Keepalive do protocolo: `ping` a cada 30 s. Serve para o Mac saber que
+     * seguimos vivos e, principalmente, para o silêncio do outro lado virar
+     * timeout de leitura aqui em vez de conexão zumbi.
+     */
+    private suspend fun keepalive() {
+        while (true) {
+            delay(KEEPALIVE_MS)
+            send(JSONObject().put("type", "ping"))
+        }
+    }
+
+    private fun openFirst(targets: List<Target>, spkiHex: String, timeoutMs: Int): Pair<SSLSocket, Target> {
+        var last: Exception? = null
+        for (target in targets) {
+            try {
+                val ssl = if (target.address != null) {
+                    openPinnedSocket(target.address, target.port, spkiHex, timeoutMs)
+                } else {
+                    openPinnedSocket(target.host, target.port, spkiHex, timeoutMs)
+                }
+                return ssl to target
+            } catch (e: Exception) {
+                // Reprovar no pinning cai aqui: existe *algo* naquele endereço,
+                // mas não é o Mac pareado. Segue para o próximo candidato — e é
+                // justamente por tentar os outros que alguém anunciando o mesmo
+                // nome no mDNS não consegue nem enganar nem travar o app.
+                last = e
+            }
+        }
+        throw last ?: IOException("nenhum endereço para tentar")
+    }
+
+    /**
+     * Procura o Mac do mais barato para o mais caro.
+     *
+     * Primeiro o endereço que funcionou da última vez e o host do QR: são
+     * tentativas diretas, sem acordar o rádio de ninguém. A descoberta entra
+     * como último recurso, que é justamente o caso em que ela serve para
+     * alguma coisa — o IP mudou. Fazer multicast antes disso seria pagar
+     * bateria (e latência na tela de aprovação) em toda reconexão de rotina.
+     */
+    private suspend fun openBestEffort(peer: Peer): Pair<SSLSocket, Target> {
+        val direct = LinkedHashMap<String, Target>()
+        rememberedAddress(peer)?.let { direct["${it.host}:${it.port}"] = it }
+        // O host do QR é um nome mDNS (`mac.local`), que boa parte dos aparelhos
+        // Android não resolve pelo resolvedor do sistema. Falha barato quando é
+        // o caso, e funciona de graça quando o aparelho resolve.
+        direct.getOrPut("${peer.host}:${peer.port}") { Target(peer.host, null, peer.port) }
+
+        return try {
+            openFirst(direct.values.toList(), peer.spki, CONNECT_TIMEOUT_MS)
+        } catch (unreachable: Exception) {
+            val discovered = discovery?.find(preferredName = peer.name).orEmpty()
+                .map { Target(it.address.hostAddress ?: it.address.toString(), it.address, it.port) }
+                .filterNot { direct.containsKey("${it.host}:${it.port}") }
+            // Sem nada novo para tentar, o erro que interessa é o da tentativa
+            // direta — "não achei ninguém" esconderia o motivo real.
+            if (discovered.isEmpty()) throw unreachable
+            openFirst(discovered, peer.spki, CONNECT_TIMEOUT_MS)
+        }
+    }
+
+    // MARK: - Cache de endereço
+
+    /**
+     * Último endereço que rendeu uma sessão autenticada.
+     *
+     * É cache de **endereço**, não de confiança: se alguém trocar isto por um
+     * host hostil, o pinning reprova o handshake e o candidato cai fora na
+     * mesma tentativa. Fica preso ao SPKI do pareamento só para não sobrar
+     * lixo de um Mac antigo depois de reparear.
+     */
+    private fun rememberedAddress(peer: Peer): Target? {
+        val prefs = addressCache ?: return null
+        if (prefs.getString("spki", null) != peer.spki) return null
+        val host = prefs.getString("host", null) ?: return null
+        val port = prefs.getInt("port", 0)
+        if (port <= 0) return null
+        return Target(host, null, port)
+    }
+
+    private fun rememberAddress(host: String, port: Int, spki: String) {
+        val prefs = addressCache ?: return
+        prefs.edit().putString("spki", spki).putString("host", host).putInt("port", port).apply()
+    }
+
+    private fun forgetRememberedAddress() {
+        addressCache?.edit()?.remove("host")?.apply()
+    }
+
+    // MARK: - Primeiro plano
+
+    private fun onEnterForeground() {
+        val peer = peer ?: return
+        // Já tentando: deixa o supervisor em paz, senão a volta para a tela
+        // abortaria uma tentativa que estava a meio caminho.
+        if (supervisor?.isActive == true) return
+        startSupervisor(peer)
+    }
+
+    private fun onEnterBackground() {
+        stopSupervisor()
         _state.value = State.Idle
+    }
+
+    private inner class ForegroundWatcher : Application.ActivityLifecycleCallbacks {
+        private var visible = 0
+
+        override fun onActivityStarted(activity: Activity) {
+            if (visible++ == 0) onEnterForeground()
+        }
+
+        override fun onActivityStopped(activity: Activity) {
+            // Girar a tela passa por stop/start com a contagem zerando no meio.
+            // Sem esta checagem, toda rotação derrubaria a conexão — e o
+            // decremento acontece de qualquer jeito, senão a contagem
+            // desandava e nunca mais chegaria a zero de verdade.
+            val changingConfiguration = activity.isChangingConfigurations
+            if (--visible <= 0) {
+                visible = 0
+                if (!changingConfiguration) onEnterBackground()
+            }
+        }
+
+        override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
+        override fun onActivityResumed(activity: Activity) {}
+        override fun onActivityPaused(activity: Activity) {}
+        override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
+        override fun onActivityDestroyed(activity: Activity) {}
     }
 
     private suspend fun readLoop(input: DataInputStream) {
@@ -242,10 +500,11 @@ class PhoneAuthClient(
                 (header[3].toInt() and 0xFF)
 
             // Comprimento absurdo é peer com defeito ou hostil; derruba em vez
-            // de tentar alocar.
+            // de tentar alocar. Quem decide se e quando tentar de novo é o
+            // supervisor — com backoff, para não virar laço apertado contra um
+            // servidor quebrado.
             if (length <= 0 || length > 65_536) {
-                disconnect()
-                return
+                throw IOException("quadro com tamanho inválido")
             }
             val body = ByteArray(length)
             input.readFully(body)
@@ -273,6 +532,10 @@ class PhoneAuthClient(
                             .put("signature", DeviceKeys.signWithIdentityKey(bytes))
                     )
                     _state.value = State.Connected
+                    sessionAuthenticated = true
+                    // Endereço que rendeu sessão de verdade: guarda para a
+                    // próxima tentativa começar por ele, sem multicast.
+                    currentTarget?.let { rememberAddress(it.host, it.port, peer.spki) }
                 } catch (e: Exception) {
                     _state.value = State.Failed(e.message ?: "falha ao autenticar a sessão")
                 }
@@ -310,10 +573,13 @@ class PhoneAuthClient(
         framed[2] = (body.size shr 8).toByte()
         framed[3] = body.size.toByte()
         body.copyInto(framed, 4)
-        runCatching {
-            output?.write(framed)
-            output?.flush()
+        sendGate.withLock {
+            runCatching {
+                output?.write(framed)
+                output?.flush()
+            }
         }
+        Unit
     }
 
     // MARK: - Decisão do usuário
@@ -416,7 +682,20 @@ class PhoneAuthClient(
 
         onSas(Sas.compute(transcript, psk))
 
-        val ssl = openPinnedSocket(host, port, spki)
+        // O QR traz `<nome>.local`, que boa parte dos aparelhos Android não
+        // resolve pelo resolvedor do sistema — sem plano B o pareamento morreria
+        // antes de começar. A descoberta só entra se o nome falhar; o `spki` que
+        // veio no próprio QR continua sendo quem decide se do outro lado está o
+        // Mac certo, então tentar outro endereço não abre brecha nenhuma.
+        val opened = try {
+            openFirst(listOf(Target(host, null, port)), spki, PAIRING_TIMEOUT_MS)
+        } catch (unreachable: Exception) {
+            val discovered = discovery?.find(preferredName = name).orEmpty()
+                .map { Target(it.address.hostAddress ?: it.address.toString(), it.address, it.port) }
+            if (discovered.isEmpty()) throw unreachable
+            openFirst(discovered, spki, PAIRING_TIMEOUT_MS)
+        }
+        val ssl = opened.first
         try {
             val request = JSONObject()
                 .put("type", "pair.request").put("sid", sid)
@@ -452,6 +731,10 @@ class PhoneAuthClient(
                 DeviceKeys.deleteAll()
                 throw IllegalStateException("o Mac recusou o pareamento")
             }
+            // O `Peer` guarda o nome do QR, que sobrevive a troca de IP; o
+            // endereço que acabou de funcionar vai para o cache, para a
+            // primeira conexão depois do pareamento ser instantânea.
+            rememberAddress(opened.second.host, opened.second.port, spki)
             Peer(host, port, spki, name, response.getString("deviceId"))
         } finally {
             runCatching { ssl.close() }

@@ -28,6 +28,7 @@ final class PhoneSession {
     /// quando o dispositivo ainda não tem chave registrada. A prova de posse
     /// vem do HMAC do segredo do QR, verificado no Broker.
     var onPairRequest: ((Message.PairRequest, PhoneSession) -> Void)?
+    var onRotateAck: ((Message.RotateAck, PhoneSession) -> Void)?
 
     let channelBinding: String
 
@@ -161,6 +162,14 @@ final class PhoneSession {
             }
             onPairRequest?(request, self)
 
+        case .rotateAck:
+            // Só de sessão autenticada: o ack é assinado pela `idKey`, e a
+            // sessão já provou possuir essa chave no hello. Um ack de sessão
+            // anônima não teria como ser atribuído a dispositivo nenhum.
+            guard isAuthenticated,
+                  let ack = try? Wire.decoder.decode(Message.RotateAck.self, from: frame) else { return }
+            onRotateAck?(ack, self)
+
         case .ping:
             send(Message.Pong())
 
@@ -184,20 +193,71 @@ final class PhoneSession {
 final class PhoneListener {
     private let queue = DispatchQueue(label: "phoneauth.listener")
     private var listener: NWListener?
-    private let identity: SecIdentity
     private let config: Config
+    private let lock = NSLock()
 
-    let channelBinding: String
+    /// Mutáveis por causa da rotação. Só o `swapIdentity` os troca, e ele
+    /// derruba a escuta antiga antes — nunca existem duas identidades TLS
+    /// vivas ao mesmo tempo. É decisão de desenho, não limitação: servir dois
+    /// certificados manteria a chave velha em uso por mais tempo, que é o
+    /// oposto do objetivo da rotação.
+    private var identity: SecIdentity
+    private var binding: String
+
+    /// O binding que as sessões novas recebem. Uma sessão carrega o binding da
+    /// identidade que estava viva quando ela foi aceita.
+    var channelBinding: String {
+        lock.lock(); defer { lock.unlock() }
+        return binding
+    }
 
     var onSession: ((PhoneSession) -> Void)?
 
     init(identity: SecIdentity, channelBinding: String, config: Config) {
         self.identity = identity
-        self.channelBinding = channelBinding
+        self.binding = channelBinding
         self.config = config
     }
 
     func start() throws {
+        try openListener()
+    }
+
+    /// Reabre a escuta com a identidade nova. Chamado pelo commit da rotação.
+    ///
+    /// O chamador é responsável por derrubar as sessões existentes: elas
+    /// carregam o binding da identidade antiga e precisam reconectar para
+    /// re-derivar o novo.
+    func swapIdentity(_ identity: SecIdentity, channelBinding: String) throws {
+        lock.lock()
+        self.identity = identity
+        self.binding = channelBinding
+        lock.unlock()
+
+        listener?.cancel()
+        listener = nil
+
+        // A porta não fica livre no instante do `cancel`. Insistir um pouco é
+        // mais honesto do que dormir um valor mágico e torcer.
+        var lastError: Swift.Error?
+        for attempt in 0 ..< 25 {
+            do {
+                try openListener()
+                return
+            } catch {
+                lastError = error
+                usleep(useconds_t(200_000 * min(attempt + 1, 5)))
+            }
+        }
+        throw lastError ?? ListenerError.badPort
+    }
+
+    private func openListener() throws {
+        lock.lock()
+        let identity = self.identity
+        let binding = self.binding
+        lock.unlock()
+
         let tls = NWProtocolTLS.Options()
         guard let secIdentity = sec_identity_create(identity) else {
             throw ListenerError.identityUnusable
@@ -206,6 +266,11 @@ final class PhoneListener {
 
         // TLS 1.3 e nada menos. Não há legado a suportar: os dois lados são
         // nossos e ambos falam 1.3.
+        //
+        // Desde a rotação isto tem uma segunda razão de existir: o anúncio de
+        // rotação é assinado pela mesma chave que faz o handshake, e a
+        // separação de domínio que torna isso seguro depende do formato do
+        // `CertificateVerify` do TLS 1.3. Ver `SignedPayload.rotateBytes`.
         sec_protocol_options_set_min_tls_protocol_version(tls.securityProtocolOptions, .TLSv13)
 
         let parameters = NWParameters(tls: tls)
@@ -224,7 +289,7 @@ final class PhoneListener {
             guard let self else { return }
             let session = PhoneSession(
                 connection: connection,
-                channelBinding: self.channelBinding,
+                channelBinding: binding,
                 queue: self.queue
             )
             self.onSession?(session)

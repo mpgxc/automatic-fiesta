@@ -13,9 +13,12 @@ enum ControlCommands {
         let sid: String?
         let deviceId: String?
         let accept: Bool?
+        let compromised: Bool?
+        let force: Bool?
     }
 
-    static func handle(_ body: Data, uid: uid_t, broker: Broker, registry: DeviceRegistry) -> Data? {
+    static func handle(_ body: Data, uid: uid_t, broker: Broker,
+                       registry: DeviceRegistry, rotation: RotationManager) -> Data? {
         guard let request = try? JSONDecoder().decode(Request.self, from: body) else {
             return json(["ok": false, "error": "comando inválido"])
         }
@@ -26,7 +29,13 @@ enum ControlCommands {
         // pareamento acontece uma vez, quando o PhoneAuth ainda não está no
         // caminho, e revogar precisa funcionar exatamente quando o celular
         // sumiu. Nenhum dos dois pode depender do celular.
-        let privileged = ["ctl.pair.begin", "ctl.pair.await", "ctl.pair.confirm", "ctl.revoke", "ctl.remove"]
+        //
+        // A rotação entra na mesma lista pelo mesmo motivo: ela decide qual
+        // chave o seu celular vai confiar. `ctl.rotate.status` fica de fora
+        // porque só devolve material público, igual a `ctl.list`.
+        let privileged = ["ctl.pair.begin", "ctl.pair.await", "ctl.pair.confirm",
+                          "ctl.revoke", "ctl.remove",
+                          "ctl.rotate.begin", "ctl.rotate.commit", "ctl.rotate.abort"]
         if privileged.contains(request.type) && uid != 0 {
             return json(["ok": false, "error": "esta operação exige root (use sudo)"])
         }
@@ -100,9 +109,73 @@ enum ControlCommands {
                 return json(["ok": false, "error": "\(error)"])
             }
 
+        // MARK: - Rotação de identidade
+
+        case "ctl.rotate.status":
+            var out = rotation.status(deviceNames: broker.activeDeviceNames())
+            out["ok"] = true
+            // O QR fora de banda é o caminho do aparelho que perdeu a janela
+            // inteira. Continua valendo depois do commit — é justamente aí que
+            // ele é necessário.
+            do {
+                out["qr"] = qrPayload(try rotation.announcementForOutOfBand())
+            } catch {
+                out["qrUnavailable"] = "\(error)"
+            }
+            return json(out)
+
+        case "ctl.rotate.begin":
+            do {
+                let record = try rotation.begin(compromised: request.compromised ?? false)
+                return json([
+                    "ok": true,
+                    "rotationId": record.rotationId,
+                    "previousSpki": record.currentSpki,
+                    "nextSpki": record.nextSpki,
+                    "commitNotBefore": record.commitNotBefore,
+                    "expiresAt": record.expiresAt,
+                    "compromised": record.retirePrevious,
+                    "connected": broker.connectedDeviceCount,
+                ])
+            } catch {
+                return json(["ok": false, "error": "\(error)"])
+            }
+
+        case "ctl.rotate.commit":
+            do {
+                let record = try rotation.commit(force: request.force ?? false,
+                                                 activeDeviceNames: broker.activeDeviceNames())
+                return json([
+                    "ok": true,
+                    "rotationId": record.rotationId,
+                    "currentSpki": record.nextSpki,
+                    "previousBindingAcceptedUntil": record.previousBindingAcceptedUntil ?? 0,
+                ])
+            } catch {
+                return json(["ok": false, "error": "\(error)"])
+            }
+
+        case "ctl.rotate.abort":
+            do {
+                try rotation.abort()
+                return json(["ok": true])
+            } catch {
+                return json(["ok": false, "error": "\(error)"])
+            }
+
         default:
             return json(["ok": false, "error": "comando desconhecido"])
         }
+    }
+
+    /// Mesmo empacotamento do QR de pareamento: JSON em base64url sem padding.
+    /// Reusar o formato deixa o leitor de QR do app com um caminho só.
+    private static func qrPayload(_ announcement: Message.RotateAnnounce) -> String {
+        guard let body = try? Wire.encoder.encode(announcement) else { return "" }
+        return body.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
     }
 
     private static func json(_ object: [String: Any]) -> Data {

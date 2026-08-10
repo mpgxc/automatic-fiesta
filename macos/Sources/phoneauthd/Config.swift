@@ -13,6 +13,23 @@ struct Config: Codable {
     /// `screensaver` exige mexer no authorization database (docs/instalacao.md).
     var allowedServices: [String] = ["sudo", "sudo_local", "su"]
 
+    /// Quanto tempo, no mínimo, uma rotação de identidade fica apenas
+    /// anunciada antes de poder ser comitada. É o prazo que um celular tem para
+    /// aparecer e aprender o pin novo; durante ele nada quebra, porque a
+    /// identidade viva ainda é a antiga. Uma semana cobre uma viagem.
+    var rotationWindowSeconds: Double = 7 * 24 * 3600
+
+    /// Quanto tempo, depois do commit, o daemon ainda aceita assinaturas
+    /// calculadas com o binding da identidade anterior.
+    ///
+    /// **Isto tem custo de segurança** e é uma muleta de compatibilidade com
+    /// prazo: enquanto ela vale, quem tivesse a chave TLS antiga conseguiria
+    /// relaiar uma aprovação assinada sob o certificado antigo. Ver
+    /// docs/rotacao-de-identidade.md §4.6. Deve virar zero assim que os apps
+    /// derivarem o binding da conexão viva; numa rotação por comprometimento já
+    /// é forçada a zero.
+    var previousBindingGraceSeconds: Double = 24 * 3600
+
     static let stateDirectory = URL(fileURLWithPath: "/Library/Application Support/PhoneAuth", isDirectory: true)
     static let socketPath     = "/var/run/phoneauthd.sock"
 

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  As permissões que o app precisa declarar. O .xcodeproj não é versionado
+  (veja .gitignore), então este arquivo existe para que as chaves não se
+  percam: aponte INFOPLIST_FILE para ele, ou copie as chaves para a aba Info
+  do alvo. O Xcode 13+ ainda gera as chaves padrão (CFBundle*) por cima.
+-->
+<plist version="1.0">
+<dict>
+    <!--
+      Sem estas duas chaves o iOS 14+ não deixa navegar por Bonjour nem
+      resolver nomes .local: o NWBrowser fica em .waiting para sempre e a
+      descoberta nunca acha nada — em silêncio, que é o pior modo de falhar.
+      A conexão pelo host do QR (`.local`) também depende da permissão.
+    -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>O PhoneAuth procura o seu Mac na rede local para receber os pedidos de autenticação. Nada sai da sua rede.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_phoneauth._tcp</string>
+    </array>
+
+    <!-- Câmera: leitura do QR code, uma única vez, no pareamento. -->
+    <key>NSCameraUsageDescription</key>
+    <string>A câmera é usada uma vez, para ler o QR code exibido pelo Mac durante o pareamento.</string>
+
+    <!-- Face ID: o portão biométrico das aprovações. -->
+    <key>NSFaceIDUsageDescription</key>
+    <string>O Face ID libera a chave, dentro do Secure Enclave, que assina a aprovação enviada ao Mac.</string>
+</dict>
+</plist>

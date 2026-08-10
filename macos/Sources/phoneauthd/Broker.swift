@@ -9,17 +9,21 @@ final class Broker {
     private let config: Config
     private let registry: DeviceRegistry
     private let pending: PendingRequests
-    private let channelBinding: String
+    private let rotation: RotationManager
     private let hostName: String
 
     private let lock = NSLock()
     private var sessions: [String: PhoneSession] = [:]   // deviceId -> sessão
     private var pairings: [String: PairingSession] = [:] // sid -> pareamento
 
-    init(config: Config, registry: DeviceRegistry, channelBinding: String) {
+    /// O binding da identidade TLS **viva agora**. Deixou de ser constante
+    /// quando a rotação passou a existir: ele muda no commit.
+    private var channelBinding: String { rotation.channelBinding }
+
+    init(config: Config, registry: DeviceRegistry, rotation: RotationManager) {
         self.config = config
         self.registry = registry
-        self.channelBinding = channelBinding
+        self.rotation = rotation
         self.pending = PendingRequests(ttl: config.requestTTLSeconds)
         self.hostName = Host.current().localizedName ?? "Mac"
     }
@@ -38,6 +42,17 @@ final class Broker {
             self.sessions[deviceId] = session
             self.lock.unlock()
             self.registry.touch(id: deviceId)
+
+            // O anúncio vai em TODA autenticação enquanto a rotação estiver
+            // pendente, e não num broadcast único no momento em que ela começa.
+            // É isso que faz a janela valer alguma coisa: cobre reconexão,
+            // celular que estava fora do ar e aparelho pareado no meio dela.
+            if let announcement = self.rotation.pendingAnnouncement() {
+                session.send(announcement)
+            }
+        }
+        session.onRotateAck = { [weak self] ack, session in
+            self?.handleRotateAck(ack, on: session)
         }
         session.onClosed = { [weak self] deviceId in
             guard let self, let deviceId else { return }
@@ -53,24 +68,95 @@ final class Broker {
         }
     }
 
+    /// Os bindings que uma assinatura pode legitimamente carregar.
+    ///
+    /// Primeiro o da conexão — é o que um cliente correto usa, porque ele
+    /// deriva o valor do certificado que está vendo. Depois, se e enquanto
+    /// houver graça pós-rotação, o da identidade anterior.
+    ///
+    /// A graça é uma muleta com prazo e **tem custo**: aceitar o binding antigo
+    /// devolve, para quem tiver a chave TLS antiga, a possibilidade de relaiar
+    /// uma aprovação assinada sob o certificado antigo. Por isso ela é curta,
+    /// desligável, forçada a zero numa rotação por comprometimento, e cada
+    /// aceitação por essa via vira um `warn` no log. Ver
+    /// docs/rotacao-de-identidade.md §4.6.
+    private func bindingCandidates(connection binding: String) -> [String] {
+        var candidates = [binding]
+        for extra in rotation.acceptableBindings() where !candidates.contains(extra) {
+            candidates.append(extra)
+        }
+        return candidates
+    }
+
     private func verifyHello(_ response: Message.HelloResponse,
                              nonce: Data,
                              channelBinding: String) -> Bool {
         guard let device = registry.device(id: response.deviceId), device.isActive else { return false }
-        guard let message = try? SignedPayload.helloBytes(
-            deviceId: response.deviceId,
-            nonceBase64: nonce.base64EncodedString(),
-            channelBinding: channelBinding
-        ) else { return false }
+
+        let candidates = bindingCandidates(connection: channelBinding)
+        for (index, candidate) in candidates.enumerated() {
+            guard let message = try? SignedPayload.helloBytes(
+                deviceId: response.deviceId,
+                nonceBase64: nonce.base64EncodedString(),
+                channelBinding: candidate
+            ) else { continue }
+
+            if (try? Verifier.verify(signatureBase64: response.signature,
+                                     over: message,
+                                     publicKeyBase64: device.idPublicKey)) != nil {
+                if index > 0 {
+                    Log.warn("hello de \(response.deviceId) aceito pelo binding ANTERIOR (graça de rotação ativa)")
+                }
+                return true
+            }
+        }
+        return false
+    }
+
+    private func handleRotateAck(_ ack: Message.RotateAck, on session: PhoneSession) {
+        guard let deviceId = session.deviceId, deviceId == ack.deviceId else { return }
+        guard let device = registry.device(id: deviceId), device.isActive else { return }
+
+        // O ack não autoriza nada — ele responde "quem já sabe do pin novo?",
+        // que é o que decide se comitar tranca alguém para fora. É assinado
+        // porque um ack forjado convenceria o operador a comitar cedo demais.
+        guard let message = try? SignedPayload.rotateAckBytes(
+            rotationId: ack.rotationId,
+            deviceId: ack.deviceId,
+            adoptedSpki: ack.adoptedSpki,
+            channelBinding: session.channelBinding
+        ) else { return }
 
         do {
-            try Verifier.verify(signatureBase64: response.signature,
+            try Verifier.verify(signatureBase64: ack.signature,
                                 over: message,
                                 publicKeyBase64: device.idPublicKey)
-            return true
         } catch {
-            return false
+            Log.warn("ack de rotação com assinatura inválida de \(deviceId); ignorado")
+            return
         }
+
+        if rotation.recordAck(deviceId: deviceId, rotationId: ack.rotationId, spki: ack.adoptedSpki) {
+            Log.info("dispositivo \(device.name) confirmou o pin novo")
+        }
+    }
+
+    /// Derruba todas as sessões. Chamado no commit da rotação: uma sessão
+    /// estabelecida sob o certificado antigo carrega o binding antigo, e é mais
+    /// limpo forçar todo mundo a reconectar e re-derivar do que manter estado
+    /// misto vivo.
+    func dropAllSessions() {
+        lock.lock()
+        let open = Array(sessions.values)
+        sessions.removeAll()
+        lock.unlock()
+        for session in open { session.connection.cancel() }
+    }
+
+    /// deviceId -> nome, dos dispositivos ativos. É o conjunto que o commit da
+    /// rotação usa para decidir quem ficaria trancado para fora.
+    func activeDeviceNames() -> [String: String] {
+        Dictionary(uniqueKeysWithValues: registry.active().map { ($0.id, $0.name) })
     }
 
     private func activeSession() -> PhoneSession? {
@@ -111,8 +197,10 @@ final class Broker {
 
         let item: PendingRequests.Pending
         do {
+            // O binding da sessão, não o global: é o certificado que este
+            // celular está de fato enxergando.
             item = try pending.create(context: context,
-                                      channelBinding: channelBinding,
+                                      channelBinding: session.channelBinding,
                                       deviceId: deviceId)
         } catch {
             Log.warn("pedido recusado: \(error)")
@@ -159,22 +247,30 @@ final class Broker {
                 return
             }
 
-            do {
-                let message = try SignedPayload.authBytes(
+            let candidates = self.bindingCandidates(connection: consumed.channelBinding)
+            for (index, candidate) in candidates.enumerated() {
+                guard let message = try? SignedPayload.authBytes(
                     requestId: consumed.requestId,
                     challengeBase64: consumed.challenge.base64EncodedString(),
                     contextHash: consumed.contextHash,
-                    channelBinding: consumed.channelBinding,
+                    channelBinding: candidate,
                     issuedAt: consumed.issuedAt,
                     decision: .allow
-                )
-                try Verifier.verify(signatureBase64: response.signature,
-                                    over: message,
-                                    publicKeyBase64: device.authPublicKey)
+                ) else { continue }
+
+                guard (try? Verifier.verify(signatureBase64: response.signature,
+                                            over: message,
+                                            publicKeyBase64: device.authPublicKey)) != nil else { continue }
+
                 approved = true
+                if index > 0 {
+                    Log.warn("pedido \(response.requestId) aceito pelo binding ANTERIOR (graça de rotação ativa)")
+                }
                 Log.info("pedido \(response.requestId) aprovado e assinatura verificada")
-            } catch {
-                Log.warn("assinatura rejeitada para \(response.requestId): \(error)")
+                break
+            }
+            if !approved {
+                Log.warn("assinatura rejeitada para \(response.requestId)")
             }
         }
 
@@ -250,9 +346,13 @@ final class Broker {
             return
         }
 
+        // O celular montou o transcript com o `spki` do QR, e o pin do TLS já
+        // obrigou esse valor a ser o certificado desta conexão. Usar o binding
+        // da sessão é dizer a mesma coisa de forma que continue verdadeira
+        // depois de uma rotação.
         guard let transcript = try? SignedPayload.pairBytes(
             sid: request.sid,
-            spki: channelBinding,
+            spki: session.channelBinding,
             idPublicKeyBase64: request.idPublicKey,
             authPublicKeyBase64: request.authPublicKey,
             deviceName: request.deviceName,

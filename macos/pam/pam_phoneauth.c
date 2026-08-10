@@ -143,7 +143,28 @@ static void jw_kv(jw_t *w, const char *key, const char *val) {
 /* `true` como valor. Qualquer outra coisa — inclusive a chave aparecer */
 /* dentro de outra string — resulta em "não aprovado". O modo de falha  */
 /* é sempre negar.                                                     */
+/*                                                                     */
+/* Para o modo de falha ser mesmo sempre negar, TODAS as ocorrências da */
+/* chave têm que valer `true`, não só a primeira. Parar na primeira     */
+/* deixava passar `{"ok":true,"ok":false}` e                            */
+/* `{"detalhe":{"ok":true},"ok":false}` — em ambos um parser de verdade */
+/* diz "não aprovado" e o scanner dizia "aprovado".                     */
+/*                                                                     */
+/* Limitação que permanece, de propósito: o scanner não conta chaves,   */
+/* então uma resposta que só tivesse `ok` aninhado                      */
+/* (`{"detalhe":{"ok":true}}`, sem `ok` de topo) ainda seria aceita.    */
+/* Rastrear profundidade exigiria acompanhar estado de string — isto é, */
+/* justamente o parser que não queremos dentro do processo setuid. O    */
+/* daemon responde um objeto plano de dois campos; a checagem de topo   */
+/* fica com ele.                                                        */
 /* ------------------------------------------------------------------ */
+
+/* Espaço em branco de JSON (RFC 8259 §2). O conjunto anterior tinha só  */
+/* espaço e tab, então `{"ok":\ntrue}` — JSON perfeitamente válido —     */
+/* era lido como negação.                                               */
+static int json_is_ws(char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
 
 static int json_bool_is_true(const char *buf, size_t len, const char *key) {
     char pattern[32];
@@ -151,30 +172,65 @@ static int json_bool_is_true(const char *buf, size_t len, const char *key) {
     if (pn <= 0 || (size_t)pn >= sizeof(pattern)) return 0;
     size_t plen = (size_t)pn;
 
+    int found = 0;
+
     for (size_t i = 0; i + plen <= len; i++) {
         if (memcmp(buf + i, pattern, plen) != 0) continue;
 
         size_t j = i + plen;
-        while (j < len && (buf[j] == ' ' || buf[j] == '\t')) j++;
+        while (j < len && json_is_ws(buf[j])) j++;
+        /* Sem dois pontos não é uso como chave (ex.: a string "ok" como
+           valor). Segue procurando; não é motivo para negar. */
         if (j >= len || buf[j] != ':') continue;
         j++;
-        while (j < len && (buf[j] == ' ' || buf[j] == '\t')) j++;
+        while (j < len && json_is_ws(buf[j])) j++;
 
-        if (j + 4 <= len && memcmp(buf + j, "true", 4) == 0) {
-            /* Rejeita `truex` e afins: o token tem que terminar aqui. */
-            if (j + 4 == len) return 1;
+        if (j + 4 > len || memcmp(buf + j, "true", 4) != 0) return 0;
+
+        /* Rejeita `truex` e afins: o token tem que terminar aqui. */
+        if (j + 4 < len) {
             char after = buf[j + 4];
-            if (after == ',' || after == '}' || after == ' ' ||
-                after == '\t' || after == '\n' || after == '\r') return 1;
+            if (after != ',' && after != '}' && !json_is_ws(after)) return 0;
         }
-        return 0;
+
+        found = 1;
+        i = j + 3;   /* o i++ do laço leva para depois do token */
     }
-    return 0;
+    return found;
 }
 
 /* ------------------------------------------------------------------ */
 /* E/S com prazo                                                       */
 /* ------------------------------------------------------------------ */
+
+/*
+ * Escrita que não pode levantar SIGPIPE.
+ *
+ * Este módulo vive dentro de sudo/login. SIGPIPE com disposição padrão MATA o
+ * processo hospedeiro, e o daemon fecha a conexão em vários caminhos legítimos
+ * (par sem credencial legível, frame recusado, daemon reiniciando). Sem esta
+ * proteção, um daemon que fecha entre o nosso connect() e o nosso write()
+ * derruba o sudo do usuário em vez de só falhar a autenticação.
+ *
+ * As duas plataformas expõem mecanismos diferentes, então usamos os dois:
+ * SO_NOSIGPIPE no socket (macOS/BSD) e MSG_NOSIGNAL no envio (Linux).
+ */
+static void pa_set_nosigpipe(int fd) {
+#ifdef SO_NOSIGPIPE
+    int on = 1;
+    (void)setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, (socklen_t)sizeof(on));
+#else
+    (void)fd;
+#endif
+}
+
+static ssize_t pa_send(int fd, const void *buf, size_t len) {
+#ifdef MSG_NOSIGNAL
+    return send(fd, buf, len, MSG_NOSIGNAL);
+#else
+    return write(fd, buf, len);
+#endif
+}
 
 static int wait_ready(int fd, short events, int64_t deadline) {
     for (;;) {
@@ -185,7 +241,21 @@ static int wait_ready(int fd, short events, int64_t deadline) {
         struct pollfd pfd = { .fd = fd, .events = events, .revents = 0 };
         int r = poll(&pfd, 1, (int)remaining);
         if (r > 0) {
-            if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) return -1;
+            if (pfd.revents & (POLLERR | POLLNVAL)) return -1;
+            /*
+             * POLLHUP chega JUNTO com POLLIN quando o par mandou a resposta
+             * inteira e fechou — que é exatamente o que o daemon faz
+             * (writeFrame e, na linha seguinte, close(fd)). Tratar POLLHUP
+             * como erro aqui jogava fora uma aprovação válida já entregue no
+             * buffer do socket, e a autenticação falhava por conta disso.
+             *
+             * O evento pedido tem prioridade. Se ele não veio, aí sim POLLHUP
+             * é fim de linha. E mesmo quando seguimos adiante, quem decide é o
+             * read()/send(): read devolve 0 (EOF) e send devolve EPIPE, e os
+             * dois já são tratados como falha pelos chamadores.
+             */
+            if (pfd.revents & events) return 0;
+            if (pfd.revents & POLLHUP) return -1;
             return 0;
         }
         if (r == 0) return -1;
@@ -198,7 +268,7 @@ static int write_all(int fd, const void *data, size_t len, int64_t deadline) {
     size_t off = 0;
     while (off < len) {
         if (wait_ready(fd, POLLOUT, deadline) != 0) return -1;
-        ssize_t n = write(fd, p + off, len - off);
+        ssize_t n = pa_send(fd, p + off, len - off);
         if (n > 0) { off += (size_t)n; continue; }
         if (n < 0 && (errno == EINTR || errno == EAGAIN)) continue;
         return -1;
@@ -260,6 +330,8 @@ static int connect_daemon(int64_t deadline) {
 
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) return -1;
+
+    pa_set_nosigpipe(fd);
 
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
