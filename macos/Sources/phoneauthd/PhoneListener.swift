@@ -246,7 +246,7 @@ final class PhoneListener {
                 return
             } catch {
                 lastError = error
-                usleep(useconds_t(200_000 * min(attempt + 1, 5)))
+                Thread.sleep(forTimeInterval: 0.2 * Double(min(attempt + 1, 5)))
             }
         }
         throw lastError ?? ListenerError.badPort

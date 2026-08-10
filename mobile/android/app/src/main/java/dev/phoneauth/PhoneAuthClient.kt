@@ -102,6 +102,7 @@ class PhoneAuthClient(
     @Volatile private var supervisor: Job? = null
     @Volatile private var currentTarget: Target? = null
     @Volatile private var sessionAuthenticated = false
+    @Volatile private var backgroundStop: Job? = null
 
     /**
      * Um único escritor por vez no socket. Com o keepalive rodando em paralelo
@@ -123,6 +124,12 @@ class PhoneAuthClient(
     private class SessionOutcome(val authenticated: Boolean, val reason: String)
 
     init {
+        // Morreu o escopo de quem criou o cliente (a Activity foi destruída), a
+        // corrotina do supervisor é cancelada — mas o `readFully` bloqueado só
+        // percebe quando o socket fecha. Fechar aqui evita deixar uma conexão de
+        // pé até estourar o prazo de leitura.
+        scope.coroutineContext[Job]?.invokeOnCompletion { closeSocket() }
+
         // Sem ninguém olhando a tela não há quem aprove nada; manter TLS aberto
         // e reconectar em loop no background é bateria queimada à toa. Se der
         // para observar o ciclo de vida do processo, o cliente se pausa
@@ -456,6 +463,8 @@ class PhoneAuthClient(
     // MARK: - Primeiro plano
 
     private fun onEnterForeground() {
+        backgroundStop?.cancel()
+        backgroundStop = null
         val peer = peer ?: return
         // Já tentando: deixa o supervisor em paz, senão a volta para a tela
         // abortaria uma tentativa que estava a meio caminho.
@@ -464,8 +473,21 @@ class PhoneAuthClient(
     }
 
     private fun onEnterBackground() {
-        stopSupervisor()
-        _state.value = State.Idle
+        backgroundStop?.cancel()
+        backgroundStop = scope.launch {
+            // Derrubar a sessão com um pedido vivo na tela perderia o `sudo` do
+            // outro lado bem quando o usuário foi desbloquear o aparelho para
+            // responder — tela apagando sozinha conta como ir para background.
+            // Espera o desafio ser respondido ou expirar; o TTL de 60s é o teto,
+            // então a exceção é curta e não vira conexão eterna em background.
+            while (true) {
+                val waiting = _pending.value ?: break
+                if (waiting.isExpired) break
+                delay(1_000)
+            }
+            stopSupervisor()
+            _state.value = State.Idle
+        }
     }
 
     private inner class ForegroundWatcher : Application.ActivityLifecycleCallbacks {

@@ -231,6 +231,135 @@ func commandRevoke(_ deviceId: String, remove: Bool) throws {
     print(remove ? "dispositivo removido." : "dispositivo revogado.")
 }
 
+// MARK: - Rotação da identidade TLS
+
+func moment(_ value: Any?) -> String {
+    guard let seconds = value as? Int, seconds > 0 else { return "—" }
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime]
+    return formatter.string(from: Date(timeIntervalSince1970: TimeInterval(seconds)))
+}
+
+func names(_ value: Any?) -> [String] {
+    (value as? [[String: Any]] ?? []).map { $0["name"] as? String ?? "?" }
+}
+
+func commandRotateStatus() throws {
+    let response = try Client.send(["type": "ctl.rotate.status"], timeout: 5)
+    try requireOK(response)
+
+    print("identidade viva:  \(response["currentSpki"] as? String ?? "?")")
+
+    guard let state = response["state"] as? String, state != "nenhuma rotação em curso" else {
+        print("rotação:          nenhuma em curso")
+        return
+    }
+
+    print("rotação:          \(state == "pending" ? "anunciada, aguardando commit" : "comitada")")
+    print("  id:             \(response["rotationId"] as? String ?? "?")")
+    print("  identidade ant: \(response["previousSpki"] as? String ?? "?")")
+    print("  identidade nova:\(response["nextSpki"] as? String ?? "?")")
+    print("  anunciada em:   \(moment(response["announcedAt"]))")
+
+    if state == "pending" {
+        print("  commit a partir:\(moment(response["commitNotBefore"]))")
+    } else {
+        print("  comitada em:    \(moment(response["committedAt"]))")
+        let until = response["previousBindingAcceptedUntil"] as? Int ?? 0
+        if until > 0 {
+            // Não é detalhe cosmético: enquanto esta linha aparece, o daemon
+            // aceita assinaturas ligadas à identidade antiga. Ver §4.6.
+            print("  ATENÇÃO: binding anterior ainda aceito até \(moment(until))")
+        }
+    }
+
+    let acked = names(response["acked"])
+    let waiting = names(response["waiting"])
+    print("  confirmaram:    \(acked.isEmpty ? "nenhum" : acked.joined(separator: ", "))")
+    print("  faltam:         \(waiting.isEmpty ? "nenhum" : waiting.joined(separator: ", "))")
+
+    if !waiting.isEmpty && state == "pending" {
+        print("\nComitar agora trancaria esses aparelhos para fora. Deixe-os conectar")
+        print("ao Mac uma vez — o anúncio é reenviado a cada conexão.")
+    }
+}
+
+func commandRotateBegin(compromised: Bool) throws {
+    if compromised {
+        print("\nRotação por COMPROMETIMENTO.")
+        print("A identidade nova entra em vigor imediatamente. Todos os celulares")
+        print("pareados param de conectar e precisarão ser pareados de novo — o")
+        print("anúncio assinado não serve aqui, porque quem tem a chave vazada")
+        print("assina um anúncio igual apontando para a chave dele.")
+        print("\nConfirma? [s/N] ", terminator: "")
+        let answer = (readLine() ?? "").trimmingCharacters(in: .whitespaces).lowercased()
+        guard answer == "s" || answer == "sim" || answer == "y" || answer == "yes" else {
+            print("cancelado.")
+            return
+        }
+    }
+
+    let response = try Client.send(["type": "ctl.rotate.begin", "compromised": compromised], timeout: 60)
+    try requireOK(response)
+
+    print("\nidentidade nova gerada: \(response["nextSpki"] as? String ?? "?")")
+
+    guard response["compromised"] as? Bool != true else {
+        print("\nTroca feita. Rode agora, em cada aparelho:")
+        print("  sudo phoneauthctl pair")
+        return
+    }
+
+    print("anúncio assinado pela identidade atual e sendo distribuído.")
+    print("celulares conectados agora: \(response["connected"] as? Int ?? 0)")
+    print("\nA identidade viva continua sendo a ANTIGA. Nada quebra até o commit.")
+    print("commit liberado a partir de: \(moment(response["commitNotBefore"]))")
+    print("\nDeixe cada celular conectar uma vez, acompanhe com:")
+    print("  phoneauthctl rotate")
+    print("e então:")
+    print("  sudo phoneauthctl rotate commit")
+}
+
+func commandRotateCommit(force: Bool) throws {
+    let response = try Client.send(["type": "ctl.rotate.commit", "force": force], timeout: 60)
+    try requireOK(response)
+
+    print("identidade viva agora: \(response["currentSpki"] as? String ?? "?")")
+    let until = response["previousBindingAcceptedUntil"] as? Int ?? 0
+    if until > 0 {
+        print("binding anterior ainda aceito até \(moment(until)) (docs/rotacao-de-identidade.md §4.6)")
+    }
+    print("\nAs sessões foram derrubadas; os celulares reconectam sozinhos.")
+    print("Confirme com: phoneauthctl status")
+}
+
+func commandRotateAbort() throws {
+    let response = try Client.send(["type": "ctl.rotate.abort"], timeout: 10)
+    try requireOK(response)
+    print("rotação descartada. A identidade viva não mudou.")
+}
+
+func commandRotateQR() throws {
+    let response = try Client.send(["type": "ctl.rotate.status"], timeout: 5)
+    try requireOK(response)
+
+    guard let qr = response["qr"] as? String, !qr.isEmpty else {
+        throw Failure(response["qrUnavailable"] as? String ?? "não há anúncio para exibir")
+    }
+
+    print("\nEscaneie com o app PhoneAuth do aparelho que ficou fora da janela:\n")
+    if let rendered = QRRenderer.render(qr) {
+        print(rendered)
+    } else {
+        print("(não foi possível desenhar o QR; cole este valor no app)\n")
+        print(qr)
+    }
+    // Vale dizer em voz alta: quem intercepta este QR aprende a chave pública
+    // nova do Mac, que é o que o próprio handshake TLS anuncia para qualquer um.
+    print("Este QR não é secreto — é uma declaração pública assinada.")
+    print("O aparelho mantém deviceId, chaves e histórico; não é repareamento.")
+}
+
 // MARK: - Despacho
 
 let arguments = Array(CommandLine.arguments.dropFirst())
@@ -247,6 +376,18 @@ do {
     case "revoke", "remove":
         guard arguments.count >= 2 else { throw Failure("informe o id do dispositivo (veja: phoneauthctl list)") }
         try commandRevoke(arguments[1], remove: command == "remove")
+    case "rotate":
+        let sub = arguments.count >= 2 ? arguments[1] : "status"
+        let flags = Set(arguments.dropFirst(2))
+        switch sub {
+        case "status": try commandRotateStatus()
+        case "begin":  try commandRotateBegin(compromised: flags.contains("--compromised"))
+        case "commit": try commandRotateCommit(force: flags.contains("--force"))
+        case "abort":  try commandRotateAbort()
+        case "qr":     try commandRotateQR()
+        default:
+            throw Failure("subcomando de rotate desconhecido: '\(sub)'. Use status, begin, commit, abort ou qr.")
+        }
     case "-h", "--help", "help":
         print(usage)
     default:

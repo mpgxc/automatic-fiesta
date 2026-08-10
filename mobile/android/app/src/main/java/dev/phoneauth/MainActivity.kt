@@ -11,10 +11,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.delay
@@ -26,20 +24,42 @@ import kotlinx.coroutines.launch
  */
 class MainActivity : FragmentActivity() {
 
-    private val client by lazy { PhoneAuthClient(lifecycleScope) }
+    // Contexto da aplicação (nunca o da Activity, que vazaria): é o que dá ao
+    // cliente o NsdManager para achar o Mac quando o IP muda e o ciclo de vida
+    // do processo para se pausar em background.
+    private val client by lazy { PhoneAuthClient(lifecycleScope, applicationContext) }
     private val store by lazy { PeerStore(this) }
+
+    /**
+     * Recarregado no retorno do pareamento. A PairingActivity persiste o peer
+     * pelo PeerStore e devolve RESULT_OK; sem reler aqui, a tela continuaria
+     * mostrando "nenhum Mac pareado" — `launchMode="singleTask"` não recria a
+     * activity, então o `remember` do estado inicial nunca reavaliaria.
+     */
+    private val pairedPeer = mutableStateOf<PhoneAuthClient.Peer?>(null)
+
+    private val pairingLauncher = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode != RESULT_OK) return@registerForActivityResult
+        store.load()?.let {
+            pairedPeer.value = it
+            client.connect(it)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        store.load()?.let { client.connect(it) }
+        pairedPeer.value = store.load()
+        pairedPeer.value?.let { client.connect(it) }
 
         setContent {
             MaterialTheme(colorScheme = if (isSystemInDarkThemeCompat()) darkColorScheme() else lightColorScheme()) {
                 Surface(Modifier.fillMaxSize()) {
                     val pending by client.pending.collectAsState()
                     val state by client.state.collectAsState()
-                    val peer = remember { mutableStateOf(store.load()) }
+                    val peer = pairedPeer
 
                     when {
                         pending != null -> ApprovalScreen(
@@ -66,7 +86,13 @@ class MainActivity : FragmentActivity() {
                             },
                         )
 
-                        else -> UnpairedScreen()
+                        else -> UnpairedScreen(
+                            onStartPairing = {
+                                pairingLauncher.launch(
+                                    android.content.Intent(this@MainActivity, PairingActivity::class.java)
+                                )
+                            },
+                        )
                     }
                 }
             }
@@ -190,7 +216,7 @@ fun IdleScreen(
 }
 
 @Composable
-fun UnpairedScreen() {
+fun UnpairedScreen(onStartPairing: () -> Unit) {
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -204,11 +230,10 @@ fun UnpairedScreen() {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(24.dp))
-        Text(
-            "O leitor de QR está em PairingActivity.",
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Light,
-        )
+        Button(
+            onClick = onStartPairing,
+            modifier = Modifier.fillMaxWidth().height(52.dp),
+        ) { Text("Escanear QR code") }
     }
 }
 

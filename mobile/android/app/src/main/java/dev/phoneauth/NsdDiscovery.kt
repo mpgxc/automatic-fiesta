@@ -78,21 +78,25 @@ class NsdDiscovery(context: Context) {
             }
         }.getOrNull()
 
+        val endpoints = ArrayList<Endpoint>()
         try {
-            val found = browse(nsd, preferredName, windowMs)
-            val endpoints = ArrayList<Endpoint>(found.size)
-            for (service in found.take(limit)) {
-                val resolved = resolve(nsd, service) ?: continue
-                @Suppress("DEPRECATION") // getHostAddresses() só existe da API 34 em diante.
-                val address = resolved.host ?: continue
-                val port = resolved.port
-                if (port <= 0) continue
-                endpoints += Endpoint(address, port, resolved.serviceName ?: "")
+            // Teto duro para a rodada inteira. O lock é caro demais para ficar
+            // de pé enquanto um resolve emperrado decide se responde; o que já
+            // tiver resolvido até aqui vale, o resto fica para a próxima.
+            withTimeoutOrNull(BUDGET_MS) {
+                for (service in browse(nsd, preferredName, windowMs).take(limit)) {
+                    val resolved = resolve(nsd, service) ?: continue
+                    @Suppress("DEPRECATION") // getHostAddresses() só existe da API 34 em diante.
+                    val address = resolved.host ?: continue
+                    val port = resolved.port
+                    if (port <= 0) continue
+                    endpoints += Endpoint(address, port, resolved.serviceName ?: "")
+                }
             }
-            endpoints
         } finally {
             runCatching { if (lock != null && lock.isHeld) lock.release() }
         }
+        endpoints
     }
 
     // MARK: - Busca
@@ -203,6 +207,7 @@ class NsdDiscovery(context: Context) {
 
         private const val MULTICAST_TAG = "phoneauth-nsd"
         private const val BROWSE_WINDOW_MS = 6_000L
+        private const val BUDGET_MS = 12_000L
         private const val SETTLE_MS = 1_500L
         private const val POLL_MS = 150L
         private const val MAX_CANDIDATES = 4

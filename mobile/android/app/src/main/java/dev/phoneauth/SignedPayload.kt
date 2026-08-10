@@ -23,9 +23,33 @@ object SignedPayload {
     class NewlineInFieldException(field: String) :
         IllegalArgumentException("campo '$field' contém quebra de linha, o que tornaria o payload ambíguo")
 
+    /**
+     * Caracteres que quebram linha de verdade quando renderizados.
+     *
+     * Vai além de `\n` e `\r` porque a regra existe para proteger a **tela**,
+     * não só a serialização. O campo `reason` carrega o argv de quem chamou o
+     * `sudo` — texto controlado pelo atacante — e é exibido cru na tela de
+     * aprovação. Todos são classe BK/NL no UAX#14, ou seja, quebra obrigatória
+     * no line-breaker do ICU que o Android usa.
+     *
+     * Sem VT/FF/NEL/LS/PS na lista, um `reason` com U+000B aparece no celular
+     * como duas linhas, a segunda escrita pelo atacante.
+     *
+     * Todos são BMP, então comparar `Char` (code unit UTF-16) basta.
+     */
+    private val LINE_BREAKING = charArrayOf(
+        '\u000A',  // LF
+        '\u000B',  // VT
+        '\u000C',  // FF
+        '\u000D',  // CR
+        '\u0085',  // NEL
+        '\u2028',  // LINE SEPARATOR
+        '\u2029',  // PARAGRAPH SEPARATOR
+    )
+
     private fun serialize(fields: List<Pair<String, String>>): ByteArray {
         fields.forEach { (name, value) ->
-            if (value.contains('\n') || value.contains('\r')) throw NewlineInFieldException(name)
+            if (value.any { it in LINE_BREAKING }) throw NewlineInFieldException(name)
         }
         return (fields.joinToString("\n") { it.second } + "\n").toByteArray(Charsets.UTF_8)
     }

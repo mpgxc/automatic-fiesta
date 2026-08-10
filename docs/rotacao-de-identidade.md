@@ -157,6 +157,21 @@ O teto de dois é deliberado. Um conjunto que só cresce vira um alargamento
 progressivo da superfície de confiança — e um pin que aceita cinco chaves não é
 mais um pin. Adotar uma terceira substitui a mais antiga.
 
+**E o conjunto tem que voltar a ter um.** Um teto de dois que nunca desce
+significa que, terminada a transição, o celular passa a confiar
+permanentemente em duas chaves em vez de uma — o dobro da superfície, para
+sempre, por causa de uma janela de dias. A regra que fecha isso é local ao
+cliente e não precisa de mensagem nenhuma:
+
+> Depois de um `ping`/`pong` completo sob o pin X, o celular descarta os
+> demais pins. X passa a ser o único.
+
+O `pong` é a primeira evidência positiva de que o daemon aceitou a sessão — ele
+encerra sem detalhes quando o `hello` não confere, então uma resposta é prova de
+que aquela identidade é a boa. A regra funciona nos dois sentidos: se a rotação
+for comitada, o conjunto colapsa em `{B}`; se for abortada, colapsa de volta em
+`{A}` sozinha, sem nenhum comando de desfazimento.
+
 ### 4.3 O anúncio de rotação, assinado pela chave TLS atual
 
 O daemon não tem chave de assinatura de aplicação. Tem exatamente uma coisa que
@@ -265,7 +280,10 @@ objetivo.
       │  anúncio assinado por A, reenviado   │  sessões derrubadas;    │
       │  a CADA sessão que se autentica      │  todos reconectam com B │
       │                                      │                         │
- pins  {A}  ──────────► {A, B} ───────────► {A, B} ─────────────────► {B}
+ pins  {A}  ──────────► {A, B} ───────────► {A, B} ──► {B}
+                                                  ▲
+                              colapsa no primeiro pong sob B (§4.2),
+                              não no fim da graça — é o cliente que decide
 ```
 
 **Fase 1 — `phoneauthctl rotate begin`.** O daemon gera a identidade nova
@@ -427,7 +445,7 @@ nova. O `context` exibido no celular continua sendo a defesa nesse cenário.
 | Anúncio gravado e reapresentado em outra conexão | Regra 3 de §4.3: `currentSpki` tem que ser o certificado *desta* conexão |
 | Anúncio antigo reapresentado depois de uma rotação posterior | `expiresAt`, e o fato de `currentSpki` já não estar mais nos pins do celular |
 | Ack forjado para forçar um commit prematuro | Assinatura pela `idKey`, amarrada ao `rotationId` e ao binding da conexão |
-| Alargar o pin do celular indefinidamente | Teto de dois pins (§4.2) |
+| Alargar o pin do celular indefinidamente | Teto de dois pins, e colapso para um no primeiro `pong` (§4.2) |
 | Pedir aprovação com contexto trocado durante a rotação | Nada aqui toca em `contextHash`; a defesa é a mesma de sempre |
 
 ## 8. O que os clientes precisam implementar (tarefa de follow-up)
@@ -445,6 +463,10 @@ acks.
    elementos, e aceitar o certificado se o hash estiver no conjunto
    (`PinnedTrustManager` no Android, `sec_protocol_options_set_verify_block` no
    iOS). Migração do estado antigo: `pins = [spki]`.
+   Atenção a quem já usa o pin como *chave de cache*: o cliente Android
+   invalida o endereço memorizado comparando o `spki` guardado com o do `Peer`,
+   e essa comparação precisa virar "está no conjunto" — senão a rotação
+   descarta o cache de descoberta a cada conexão.
 2. **Derivar o `channelBinding` da conexão viva** (§4.1), em `hello.response` e
    em `auth.response`. Hoje os dois usam `peer.spki`. No iOS o certificado da
    folha já passa pelo `verify_block`; guarde o hash calculado ali na sessão. No
@@ -457,11 +479,14 @@ acks.
    todas obrigatórias. Falhando qualquer uma, ignorar em silêncio — não
    desconectar, não avisar o servidor.
 5. **Responder `rotate.ack`** assinado pela `idKey`. Sem biometria.
-6. **Se `retirePrevious == true`**: adotar o pin novo, remover o antigo do
+6. **Colapsar o conjunto de pins** depois do primeiro `ping`/`pong` sob um pin
+   (§4.2). Sem isto o celular fica confiando em duas chaves para sempre, que é
+   metade da rotação feita.
+7. **Se `retirePrevious == true`**: adotar o pin novo, remover o antigo do
    conjunto **e desconectar imediatamente** — a conexão atual está sob um
    certificado que acabou de deixar de ser confiável. Reconectar com backoff.
-7. **Avisar o usuário**, sem bloquear.
-8. **Ler o QR de re-pin** (§5): mesmo objeto, mesmas verificações, regra 3
+8. **Avisar o usuário**, sem bloquear.
+9. **Ler o QR de re-pin** (§5): mesmo objeto, mesmas verificações, regra 3
    trocada por "`currentSpki` está entre os meus pins". Reaproveita o leitor de
    QR do pareamento.
 

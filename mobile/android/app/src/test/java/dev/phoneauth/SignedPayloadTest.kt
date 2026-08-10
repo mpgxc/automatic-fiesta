@@ -160,4 +160,79 @@ class SignedPayloadTest {
             )
         }
     }
+
+    /**
+     * CRLF é o caso que quase escapou — do lado Swift, não daqui.
+     *
+     * `String.contains("\n")` em Swift resolve para a sobrecarga de `Character`,
+     * e `"\r\n"` é UM único `Character` (GB3 do UAX#29). Com a checagem antiga o
+     * Swift aceitava e o Kotlin rejeitava, produzindo o "aprovei no iPhone e no
+     * Android quebrou" que estes gêmeos existem para impedir. Este teste trava
+     * o comportamento dos dois lados.
+     */
+    @Test
+    fun `CRLF é rejeitado`() {
+        assertThrows(SignedPayload.NewlineInFieldException::class.java) {
+            SignedPayload.contextBytes(
+                SignedPayload.Context(
+                    host = "Mac", user = "u", service = "sudo",
+                    reason = "sudo true\r\nlinha falsa",
+                )
+            )
+        }
+    }
+
+    /**
+     * `reason` carrega o argv de quem chamou o `sudo` e é exibido cru na tela de
+     * aprovação. Estes são quebra obrigatória no UAX#14, então sem rejeitá-los
+     * um atacante escreve a segunda linha do que o usuário lê antes de aprovar.
+     */
+    @Test
+    fun `todo caractere que quebra linha é rejeitado`() {
+        for (code in listOf(0x000A, 0x000B, 0x000C, 0x000D, 0x0085, 0x2028, 0x2029)) {
+            assertThrows(
+                "U+%04X deveria ser rejeitado".format(code),
+                SignedPayload.NewlineInFieldException::class.java,
+            ) {
+                SignedPayload.contextBytes(
+                    SignedPayload.Context(
+                        host = "Mac", user = "u", service = "sudo",
+                        reason = "rm -rf /${code.toChar()}Toque para confirmar",
+                    )
+                )
+            }
+        }
+    }
+
+    /** A regra ficou mais estrita; não pode ter ficado estrita demais. */
+    @Test
+    fun `texto legítimo continua passando`() {
+        for (reason in listOf(
+            "sudo brew install ripgrep", "café com acento", "tab\tinterno",
+            "emoji 🔐 no motivo", "chinês 中文", "",
+        )) {
+            SignedPayload.contextBytes(
+                SignedPayload.Context(host = "Mac", user = "u", service = "sudo", reason = reason)
+            )
+        }
+    }
+
+    /**
+     * O Sas do PhoneAuthClient.kt é HKDF escrito à mão e é a criptografia de
+     * maior risco do app Android — e não havia nada exercitando. O vetor vem de
+     * docs/test-vectors.json, o mesmo que o teste macOS afirma.
+     */
+    @Test
+    fun `SAS bate com o vetor`() {
+        val transcript = SignedPayload.pairBytes(
+            sid = "7B3E1A2C-0000-4000-8000-000000000001",
+            spki = "b".repeat(64),
+            idPublicKeyBase64 = b64(ByteArray(91) { 0x11 }),
+            authPublicKeyBase64 = b64(ByteArray(91) { 0x22 }),
+            deviceName = "iPhone 15 de mpgxc",
+            platform = "ios",
+        )
+        val psk = ByteArray(32) { it.toByte() }
+        assertEquals("561453", Sas.compute(transcript, psk))
+    }
 }

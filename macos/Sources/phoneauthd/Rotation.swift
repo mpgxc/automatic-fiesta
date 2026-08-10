@@ -166,11 +166,15 @@ final class RotationManager: @unchecked Sendable {
 
     // MARK: - Acks
 
+    /// Só conta o ack que fala da rotação corrente e do pin corretos. Um ack de
+    /// rotação antiga não pode contar como "este aparelho está pronto".
     func recordAck(deviceId: String, rotationId: String, spki: String) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        guard var record, record.rotationId == rotationId, record.nextSpki == spki else { return false }
-        record.acks[deviceId] = RotationRecord.Ack(spki: spki, at: Int64(Date().timeIntervalSince1970))
-        self.record = record
+        guard var updated = record,
+              updated.rotationId == rotationId,
+              updated.nextSpki == spki else { return false }
+        updated.acks[deviceId] = RotationRecord.Ack(spki: spki, at: Int64(Date().timeIntervalSince1970))
+        record = updated
         persistLocked()
         return true
     }
@@ -305,9 +309,9 @@ final class RotationManager: @unchecked Sendable {
             throw Error.nextIdentityUnusable("o SPKI não confere com o que foi anunciado")
         }
 
-        // A chave que sai só é preservada quando há graça — e há graça só
-        // quando a hipótese "ela não vazou" ainda de pé. Guardar chave privata
-        // antiga além disso é trocar um risco por outro.
+        // A chave que sai só é preservada enquanto houver graça — e só há graça
+        // quando a hipótese "ela não vazou" continua de pé. Guardar chave
+        // privada antiga além disso é trocar um risco por outro.
         let grace = current.retirePrevious ? 0 : Int64(config.previousBindingGraceSeconds)
         if grace > 0 {
             try Identity.copySlot(directory: directory, from: .live, to: .prev)
@@ -322,6 +326,15 @@ final class RotationManager: @unchecked Sendable {
 
         lock.lock()
         liveIdentity = next
+        // Um ack pode ter chegado enquanto os arquivos eram trocados. Reler o
+        // registro em vez de sobrescrevê-lo com a cópia antiga é o que mantém o
+        // `rotate status` honesto sobre quem já sabia do pin novo.
+        if var latest = record, latest.rotationId == current.rotationId {
+            latest.phase = current.phase
+            latest.committedAt = current.committedAt
+            latest.previousBindingAcceptedUntil = current.previousBindingAcceptedUntil
+            current = latest
+        }
         record = current
         persistLocked()
         lock.unlock()

@@ -21,9 +21,29 @@ enum SignedPayload {
     static let pairDomain    = "PHONEAUTH-PAIR-V1"
     static let helloDomain   = "PHONEAUTH-HELLO-V1"
 
+    /// Ver a nota longa no gêmeo `macos/Sources/PhoneAuthCore/SignedPayload.swift`.
+    ///
+    /// Em resumo: a lista vai além de `\n`/`\r` porque a regra protege a tela —
+    /// `reason` carrega o argv de quem chamou o `sudo` e é exibido cru — e todos
+    /// estes scalars são quebra obrigatória no UAX#14.
+    static let lineBreakingScalars: Set<Unicode.Scalar> = [
+        "\u{000A}",  // LF
+        "\u{000B}",  // VT
+        "\u{000C}",  // FF
+        "\u{000D}",  // CR
+        "\u{0085}",  // NEL
+        "\u{2028}",  // LINE SEPARATOR
+        "\u{2029}",  // PARAGRAPH SEPARATOR
+    ]
+
+    /// Percorre `unicodeScalars` e não `Character`: `"\r\n"` é um único
+    /// `Character` (GB3 do UAX#29), então `contains("\n")` deixaria CRLF passar
+    /// aqui enquanto o gêmeo Kotlin o rejeita.
     private static func serialize(_ fields: [(name: String, value: String)]) throws -> Data {
-        for field in fields where field.value.contains("\n") || field.value.contains("\r") {
-            throw Error.newlineInField(field.name)
+        for field in fields {
+            if field.value.unicodeScalars.contains(where: { lineBreakingScalars.contains($0) }) {
+                throw Error.newlineInField(field.name)
+            }
         }
         return Data((fields.map(\.value).joined(separator: "\n") + "\n").utf8)
     }

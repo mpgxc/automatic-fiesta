@@ -55,7 +55,7 @@ QR carrega o JSON abaixo em base64url:
   "v": 1,
   "host": "macbook-de-mpgxc.local",
   "port": 58731,
-  "spki": "<base64 do SHA-256 do SubjectPublicKeyInfo DER do cert do daemon>",
+  "spki": "<hex minúsculo do SHA-256 do SubjectPublicKeyInfo DER do cert do daemon>",
   "sid": "<UUID da sessão de pareamento>",
   "psk": "<base64 de 32 bytes aleatórios>",
   "name": "MacBook Pro de mpgxc"
@@ -70,6 +70,10 @@ ele não há pareamento, mesmo que o atacante alcance a porta TLS.
 O celular conecta, valida o certificado por SPKI pinning contra `spki` (o
 certificado é auto-assinado; a validação de cadeia é substituída inteiramente
 por esta comparação) e envia:
+
+> O celular guarda o pin como um **conjunto** de no máximo dois hashes, não um
+> valor único: é o que permite rotacionar a identidade do daemon sem repareamento
+> (§9). No pareamento o conjunto tem um elemento só, o `spki` do QR.
 
 ```json
 {
@@ -144,6 +148,13 @@ O Mac verifica contra a `idPublicKey` registrada. A partir daí a conexão está
 autenticada como aquele dispositivo. Se a verificação falhar, a conexão é
 encerrada sem detalhes de erro.
 
+**De onde sai o `channelBinding`.** Sempre do certificado **apresentado nesta
+conexão TLS** — hex do SHA-256 do SubjectPublicKeyInfo dele — e nunca de um
+valor lido do armazenamento do pareamento. Enquanto houver um pin só os dois
+coincidem, mas são coisas diferentes: o pin diz em quem confiar, o binding diz
+com quem se está falando agora. Confundir os dois é o que tornava a rotação da
+identidade impossível (§9).
+
 Keepalive: `{"type":"ping"}` / `{"type":"pong"}` a cada 30 s. O Mac considera
 morta uma conexão sem `pong` em 90 s.
 
@@ -160,7 +171,7 @@ O PAM aciona o daemon, que envia à sessão autenticada:
   "challenge": "<base64 de 32 bytes aleatórios>",
   "issuedAt": 1770000000,
   "expiresAt": 1770000060,
-  "channelBinding": "<hex do SHA-256 do SPKI do cert do servidor>",
+  "channelBinding": "<hex do SHA-256 do SPKI do cert apresentado nesta conexão>",
   "context": {
     "host": "MacBook Pro de mpgxc",
     "user": "mpgxc",
@@ -223,6 +234,29 @@ PHONEAUTH-PAIR-V1
 <authPublicKey em base64>
 <deviceName>
 <platform>
+```
+
+**Anúncio e reconhecimento de rotação** (seção 9), mesma disciplina. Estes dois
+foram **acrescentados**; os quatro acima não mudaram um byte, e os vetores em
+`docs/test-vectors.json` continuam valendo como estão.
+
+```
+PHONEAUTH-ROTATE-V1
+<rotationId>
+<currentSpki>
+<nextSpki>
+<announcedAt em decimal>
+<commitNotBefore em decimal>
+<expiresAt em decimal>
+<retirePrevious>            ← literalmente "true" ou "false"
+```
+
+```
+PHONEAUTH-ROTATE-ACK-V1
+<rotationId>
+<deviceId>
+<adoptedSpki>
+<channelBinding>
 ```
 
 > **Regra de construção:** nenhum campo pode conter `\n` ou `\r`. Quem monta a
@@ -290,3 +324,129 @@ daemon também não.
   automático.
 - No máximo **5 tentativas de pareamento por minuto**, por IP de origem.
 - No máximo **10 pedidos de autenticação por minuto**, no total.
+
+## 9. Rotação da identidade TLS
+
+Troca a chave TLS do daemon sem invalidar os pareamentos. O desenho completo,
+com as opções consideradas e os trade-offs, está em
+[rotacao-de-identidade.md](rotacao-de-identidade.md) — aqui ficam só os bytes.
+
+Duas fases, e **em nenhum instante existem duas identidades TLS vivas**. Entre
+o anúncio e o commit, a identidade viva continua sendo a antiga: nada quebra.
+
+### 9.1 `rotate.announce` — Mac → celular
+
+Enviado a **toda sessão logo depois de ela se autenticar**, enquanto houver
+rotação anunciada. Reenviar sempre, em vez de um broadcast único, é o que faz a
+janela funcionar: cobre reconexão, celular que estava fora do ar e aparelho
+pareado no meio da janela.
+
+```json
+{
+  "type": "rotate.announce",
+  "rotationId": "<UUID>",
+  "currentSpki": "<hex do SPKI da identidade que está saindo>",
+  "currentSpkiDer": "<base64 do SubjectPublicKeyInfo DER dessa mesma chave>",
+  "nextSpki": "<hex do SPKI da identidade que entra>",
+  "announcedAt": 1770000000,
+  "commitNotBefore": 1770604800,
+  "expiresAt": 1771209600,
+  "retirePrevious": false,
+  "signature": "<base64 DER>"
+}
+```
+
+`signature` é ECDSA-P256-SHA256 sobre `PHONEAUTH-ROTATE-V1` (§5.2), feita com a
+**chave privada TLS atual** — a que está saindo. É a única autoridade que o
+daemon tem sobre um celular já pareado: a chave que sai assina a que entra.
+
+Reusar a chave TLS para assinar dados de aplicação é seguro por separação de
+domínio: o `CertificateVerify` do TLS 1.3 (RFC 8446 §4.4.3) cobre bytes que
+começam obrigatoriamente com 64 bytes `0x20`; este payload começa com
+`PHONEAUTH-ROTATE-V1\n`. Isso depende de o daemon só falar TLS 1.3, que é o caso.
+
+**O celular só adota depois de todas estas verificações, nesta ordem:**
+
+1. `sha256(currentSpkiDer)` é igual a `currentSpki`;
+2. `currentSpki` está no conjunto de pins que o celular já tem;
+3. chegando pela conexão TLS: `currentSpki` é o hash do certificado **desta**
+   conexão. Isso mata a reapresentação de um anúncio gravado noutra conexão;
+4. `signature` verifica sob a chave pública contida em `currentSpkiDer`;
+5. `announcedAt <= agora <= expiresAt`;
+6. `nextSpki` tem 64 hex minúsculos e é diferente de `currentSpki`.
+
+Falhando qualquer uma: **ignorar em silêncio**. Não desconectar, não responder.
+
+Adotando: `pins ← {currentSpki, nextSpki}`. O conjunto tem teto de dois — um pin
+que aceita cinco chaves não é mais um pin; adotar uma terceira substitui a mais
+antiga.
+
+E o conjunto volta a ter um sozinho, sem mensagem nenhuma:
+
+> Depois de um `ping`/`pong` completo sob o pin X, o celular descarta os demais.
+
+O `pong` é a primeira evidência positiva de que o daemon aceitou a sessão — ele
+encerra sem detalhes quando o `hello` não confere. A regra vale nos dois
+sentidos: rotação comitada colapsa em `{novo}`, rotação abortada colapsa de
+volta em `{antigo}`. Sem ela o celular passaria a confiar em duas chaves para
+sempre por causa de uma janela de dias.
+
+Com `retirePrevious == true` o celular descarta `currentSpki` na hora **e
+derruba a conexão**: ela está sob um certificado que acabou de deixar de ser
+confiável. Reconecta com backoff.
+
+### 9.2 `rotate.ack` — celular → Mac
+
+```json
+{
+  "type": "rotate.ack",
+  "rotationId": "<UUID>",
+  "deviceId": "<UUID>",
+  "adoptedSpki": "<hex, igual ao nextSpki>",
+  "signature": "<base64 DER>"
+}
+```
+
+Assinatura pela **`idKey`**, sem biometria, sobre `PHONEAUTH-ROTATE-ACK-V1`
+(§5.2). O `channelBinding` daquela serialização é o da conexão que carrega o
+ack — o da identidade **antiga**, já que o commit ainda não aconteceu.
+
+Não usa a `authKey` de propósito: o anúncio chega quando chega, com o app em
+background, e a autoridade sobre o conteúdo é a chave TLS, não o usuário. Pedir
+o dedo aqui não verificaria nada e treinaria exatamente o toque reflexo que o
+[modelo de ameaças](modelo-de-ameacas.md) trata como a ameaça mais realista.
+
+O ack não autoriza nada. Ele responde à pergunta que decide se comitar tranca
+alguém para fora: **quem já sabe do pin novo?** É assinado porque um ack forjado
+convenceria o operador a comitar cedo demais, e leva o `channelBinding` para que
+um ack gravado não sirva numa rotação futura.
+
+O daemon aceita `rotate.ack` **só de sessão autenticada**, e não responde nada —
+nem sucesso, nem erro. Ack inválido é registrado no log e descartado.
+
+### 9.3 O commit
+
+Não é mensagem. O daemon troca os arquivos, reabre a escuta com o certificado
+novo e **derruba todas as sessões**. Os celulares reconectam; quem adotou passa
+no pinning, quem não adotou não passa. O daemon nunca comita sozinho — é sempre
+um comando explícito do operador (`phoneauthctl rotate commit`).
+
+Por uma janela configurável depois do commit, o daemon aceita assinaturas de
+`hello.response` e `auth.response` calculadas com o binding **anterior**. Isso é
+uma muleta de compatibilidade com custo de segurança real e prazo para acabar —
+ver §4.6 do documento de desenho. Numa rotação por comprometimento a janela é
+zero, sem opção.
+
+### 9.4 Fora de banda
+
+O mesmo objeto de §9.1, em base64url (mesmo empacotamento do QR de pareamento),
+pode ser exibido como QR pelo Mac para um aparelho que ficou fora do ar a janela
+inteira. As verificações são as mesmas, com a regra 3 trocada por "`currentSpki`
+está entre os meus pins" — não há conexão TLS de onde tirar o certificado.
+
+Não é repareamento: `deviceId`, chaves e histórico ficam intactos, e não há
+apresentação biométrica. O QR não é secreto.
+
+Este caminho **não vale** para rotação por comprometimento: o anúncio é assinado
+pela chave que vazou, então quem a tem assina um anúncio igual apontando para a
+chave dele. Nesse cenário a única remediação é parear de novo.

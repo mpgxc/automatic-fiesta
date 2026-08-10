@@ -131,6 +131,43 @@ final class SignedPayloadTests: XCTestCase {
             channelBinding: "00", issuedAt: 0, decision: .allow))
     }
 
+    /// CRLF é o caso que quase escapou.
+    ///
+    /// `String.contains("\n")` resolve para a sobrecarga de `Character`, e
+    /// `"\r\n"` é UM único `Character` (regra GB3 do UAX#29 mantém CR e LF no
+    /// mesmo grapheme cluster). Com a checagem antiga, `"a\r\nb"` passava aqui
+    /// e era rejeitado pelo gêmeo Kotlin, que compara code units — exatamente o
+    /// "aprovei no iPhone e no Android quebrou" que estes arquivos existem para
+    /// impedir.
+    func testCRLFIsRejected() {
+        let ctx = SignedPayload.Context(host: "Mac", user: "u", service: "sudo",
+                                        reason: "sudo true\r\nlinha falsa")
+        XCTAssertThrowsError(try SignedPayload.contextBytes(ctx))
+    }
+
+    /// `reason` carrega o argv de quem chamou o `sudo` e é exibido cru na tela
+    /// de aprovação. Estes scalars são quebra obrigatória no UAX#14, então sem
+    /// rejeitá-los um atacante escreve a segunda linha do que o usuário lê
+    /// antes de encostar o dedo.
+    func testAllLineBreakingScalarsAreRejected() {
+        for scalar in SignedPayload.lineBreakingScalars {
+            let reason = "rm -rf /\(Character(scalar))Toque para confirmar"
+            let ctx = SignedPayload.Context(host: "Mac", user: "u", service: "sudo", reason: reason)
+            XCTAssertThrowsError(try SignedPayload.contextBytes(ctx),
+                                 "scalar U+\(String(scalar.value, radix: 16, uppercase: true)) deveria ser rejeitado")
+        }
+    }
+
+    /// A regra ficou mais estrita; não pode ter ficado estrita demais. Texto
+    /// legítimo de linha de comando precisa continuar passando.
+    func testLegitimateTextStillPasses() throws {
+        for reason in ["sudo brew install ripgrep", "café com acento", "tab\tinterno",
+                       "emoji 🔐 no motivo", "chinês 中文", ""] {
+            let ctx = SignedPayload.Context(host: "Mac", user: "u", service: "sudo", reason: reason)
+            XCTAssertNoThrow(try SignedPayload.contextBytes(ctx), "rejeitou texto legítimo: \(reason)")
+        }
+    }
+
     // MARK: - Pareamento: HMAC e SAS
 
     func testPairingProofMatchesVector() throws {

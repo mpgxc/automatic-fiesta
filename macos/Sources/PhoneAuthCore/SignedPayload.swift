@@ -47,9 +47,42 @@ public enum SignedPayload {
 
     // MARK: - Montagem
 
+    /// Scalars que quebram linha de verdade quando renderizados.
+    ///
+    /// Vai além de `\n` e `\r` porque a regra existe para proteger a **tela**,
+    /// não só a serialização. O campo `reason` carrega o argv de quem chamou o
+    /// `sudo` — texto controlado pelo atacante — e é exibido cru na tela de
+    /// aprovação. Todos os scalars abaixo são classe BK/NL no UAX#14, ou seja,
+    /// quebra obrigatória tanto no CoreText quanto no line-breaker do Android.
+    ///
+    /// Sem VT/FF/NEL/LS/PS na lista, `sudo $'rm -rf /\u{0B}Toque para confirmar'`
+    /// aparece no celular como duas linhas, a segunda escrita pelo atacante.
+    static let lineBreakingScalars: Set<Unicode.Scalar> = [
+        "\u{000A}",  // LF
+        "\u{000B}",  // VT
+        "\u{000C}",  // FF
+        "\u{000D}",  // CR
+        "\u{0085}",  // NEL
+        "\u{2028}",  // LINE SEPARATOR
+        "\u{2029}",  // PARAGRAPH SEPARATOR
+    ]
+
+    /// A verificação percorre `unicodeScalars`, e isso é deliberado.
+    ///
+    /// `String.contains("\n")` resolve para a sobrecarga de `Character`, e
+    /// `"\r\n"` é UM único `Character` — a regra GB3 do UAX#29 mantém CR e LF
+    /// no mesmo grapheme cluster. Ou seja, `"a\r\nb".contains("\n")` é `false`:
+    /// um CRLF passaria batido aqui enquanto o gêmeo Kotlin, que compara code
+    /// units, rejeitaria. Resultado seria o sintoma que estes arquivos existem
+    /// para evitar — "aprovei no iPhone e no Android quebrou".
+    ///
+    /// Scalar não tem essa ambiguidade: CRLF são dois scalars, e ambos estão
+    /// na lista.
     private static func serialize(_ fields: [(name: String, value: String)]) throws -> Data {
-        for field in fields where field.value.contains("\n") || field.value.contains("\r") {
-            throw Error.newlineInField(field.name)
+        for field in fields {
+            if field.value.unicodeScalars.contains(where: { lineBreakingScalars.contains($0) }) {
+                throw Error.newlineInField(field.name)
+            }
         }
         let joined = fields.map(\.value).joined(separator: "\n") + "\n"
         return Data(joined.utf8)
