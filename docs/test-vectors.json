@@ -1,0 +1,65 @@
+{
+  "context": {
+    "fields": [
+      "MacBook Pro de mpgxc",
+      "mpgxc",
+      "sudo",
+      "sudo brew install ripgrep",
+      "/usr/bin/sudo",
+      "ttys002"
+    ],
+    "bytesLen": 97,
+    "sha256": "51eae53b67ffb644ba5a20529ad453ccd6e05b61d4832c390c82e33992d52d9b"
+  },
+  "contextEmptyFields": {
+    "fields": [
+      "Mac",
+      "root",
+      "su",
+      "",
+      "",
+      ""
+    ],
+    "bytesLen": 32,
+    "sha256": "612a5428fbff7ff14778574fdfd1db4788fbabde8a726117fd4039499985fc3d"
+  },
+  "auth": {
+    "requestId": "3F2504E0-4F89-41D3-9A0C-0305E82C3301",
+    "challengeB64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+    "contextHash": "51eae53b67ffb644ba5a20529ad453ccd6e05b61d4832c390c82e33992d52d9b",
+    "channelBinding": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "issuedAt": 1770000000,
+    "decision": "allow",
+    "bytesLen": 247,
+    "sha256": "d505f91918d1bdb56bb4179a257b1f47e966f739d75c2c31f4303069372529b0"
+  },
+  "authDeny": {
+    "sha256": "9f565d0511a5693d209b176a7dfd0a4de6b6145bdd2c19bb69d8bdde8d2904ae"
+  },
+  "pair": {
+    "sid": "7B3E1A2C-0000-4000-8000-000000000001",
+    "spki": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "idPublicKey": "EREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREREQ==",
+    "authPublicKey": "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIg==",
+    "deviceName": "iPhone 15 de mpgxc",
+    "platform": "ios",
+    "bytesLen": 393,
+    "sha256": "6eb2345096b00b95579e96e6a6a7380429a1e987c7e4e4854cabf5e792640d84"
+  },
+  "hello": {
+    "deviceId": "9C1D2E3F-0000-4000-8000-000000000002",
+    "nonceB64": "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqo=",
+    "channelBinding": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "bytesLen": 166,
+    "sha256": "e2d35c4b5772349157abfd31905482f68b76d05d3d4359b0db30640dcfe74977"
+  },
+  "pairingProof": {
+    "pskB64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+    "proofB64": "5NKfx1QzKzZ2hezIOWZhpWskuVniqL3bEmygrKEAKwI="
+  },
+  "sas": {
+    "okmHex": "6b249c6d",
+    "code": "561453"
+  },
+  "_hkdfSaltEquivalence": true
+}
