@@ -2,8 +2,13 @@
 #
 #   make            constrói o módulo (só no macOS)
 #   make test       roda os testes unitários das funções puras
-#   make install    instala em /usr/lib/pam (requer root e SIP desabilitado
-#                   para /usr/lib/pam — veja docs/instalacao.md)
+#   make install    instala em /usr/local/lib/pam
+#
+# Instalamos em /usr/local/lib/pam e não em /usr/lib/pam porque este último é
+# protegido pelo SIP. O OpenPAM aceita caminho absoluto no /etc/pam.d, então
+# referenciamos o módulo por caminho completo e ninguém precisa desabilitar o
+# SIP para usar isto — o que seria um preço absurdo por uma conveniência de
+# autenticação.
 #
 # gnu11, não c11: clock_gettime fica escondido sob o modo ISO estrito.
 
@@ -11,7 +16,7 @@ CC      ?= clang
 CFLAGS  ?= -Wall -Wextra -Wconversion -Wshadow -Wpointer-arith -Wwrite-strings \
            -O2 -std=gnu11 -fstack-protector-strong
 MODULE   = pam_phoneauth.so
-PAMDIR  ?= /usr/lib/pam
+PAMDIR  ?= /usr/local/lib/pam
 
 .PHONY: all test clean install uninstall
 
@@ -31,6 +36,7 @@ test: test_pam_phoneauth.c pam_phoneauth.c
 	./test_pam_phoneauth
 
 install: $(MODULE)
+	install -d -o root -g wheel -m 0755 $(PAMDIR)
 	install -o root -g wheel -m 0444 $(MODULE) $(PAMDIR)/$(MODULE)
 	@echo "Módulo instalado. Agora edite /etc/pam.d/sudo_local — veja docs/instalacao.md"
 	@echo "Lembre: 'sufficient', NUNCA 'required'."

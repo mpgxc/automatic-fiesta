@@ -1,0 +1,31 @@
+# Swift
+macos/.build/
+macos/.swiftpm/
+*.xcodeproj
+*.xcworkspace
+
+# PAM
+macos/pam/*.so
+macos/pam/test_pam_phoneauth
+macos/pam/*.dSYM/
+
+# Android
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/local.properties
+*.apk
+*.aab
+
+# Xcode
+mobile/ios/build/
+DerivedData/
+
+# Estado local — nunca deve ser versionado.
+# identity.p12 e identity.pass são a chave privada TLS do daemon; devices.json
+# é só material público, mas é estado de máquina, não de projeto.
+*.p12
+*.pass
+devices.json
+
+.DS_Store

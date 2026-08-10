@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.phoneauth.daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/phoneauthd</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <!-- Só reinicia se sair mal. Um exit(0) é encerramento intencional
+             (SIGTERM no shutdown) e não deve ser revertido pelo launchd. -->
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- Evita loop apertado de respawn se o daemon estiver falhando ao subir,
+         por exemplo com identity.p12 ausente. -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/phoneauthd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/phoneauthd.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
