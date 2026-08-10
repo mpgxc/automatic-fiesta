@@ -12,6 +12,8 @@ public enum Message {
         case helloResponse  = "hello.response"
         case pairRequest    = "pair.request"
         case pairOk         = "pair.ok"
+        case rotateAnnounce = "rotate.announce"
+        case rotateAck      = "rotate.ack"
         case ping
         case pong
         case error
@@ -127,6 +129,59 @@ public enum Message {
             self.type = .pairOk
             self.deviceId = deviceId
         }
+    }
+
+    // MARK: - Rotação de identidade
+
+    /// Anúncio da identidade TLS nova. Ver docs/rotacao-de-identidade.md §4.3.
+    ///
+    /// É auto-contido de propósito: carrega o SPKI DER da chave que assina,
+    /// para que o celular consiga verificar a assinatura mesmo quando o anúncio
+    /// não chega pela conexão TLS — o caso do aparelho que ficou fora da janela
+    /// inteira e recebe o mesmo objeto por QR code.
+    public struct RotateAnnounce: Codable, Sendable {
+        public let type: Kind
+        public let rotationId: String
+        /// Hex do SHA-256 do SPKI da identidade que está saindo — o valor que o
+        /// celular já fixa hoje.
+        public let currentSpki: String
+        /// SubjectPublicKeyInfo DER, base64. O celular confere
+        /// `sha256(currentSpkiDer) == currentSpki` antes de usá-lo.
+        public let currentSpkiDer: String
+        public let nextSpki: String
+        public let announcedAt: Int64
+        public let commitNotBefore: Int64
+        public let expiresAt: Int64
+        /// Quando verdadeiro, o celular descarta o pin antigo na hora e
+        /// derruba a conexão: ela está sob um certificado que acabou de deixar
+        /// de ser confiável.
+        public let retirePrevious: Bool
+        /// ECDSA-P256-SHA256 DER, base64, sobre `SignedPayload.rotateBytes`.
+        public let signature: String
+
+        public init(rotationId: String, currentSpki: String, currentSpkiDer: String,
+                    nextSpki: String, announcedAt: Int64, commitNotBefore: Int64,
+                    expiresAt: Int64, retirePrevious: Bool, signature: String) {
+            self.type = .rotateAnnounce
+            self.rotationId = rotationId
+            self.currentSpki = currentSpki
+            self.currentSpkiDer = currentSpkiDer
+            self.nextSpki = nextSpki
+            self.announcedAt = announcedAt
+            self.commitNotBefore = commitNotBefore
+            self.expiresAt = expiresAt
+            self.retirePrevious = retirePrevious
+            self.signature = signature
+        }
+    }
+
+    public struct RotateAck: Codable, Sendable {
+        public let type: Kind
+        public let rotationId: String
+        public let deviceId: String
+        public let adoptedSpki: String
+        /// Assinatura pela `idKey` sobre `SignedPayload.rotateAckBytes`.
+        public let signature: String
     }
 
     public struct Ping: Codable, Sendable {

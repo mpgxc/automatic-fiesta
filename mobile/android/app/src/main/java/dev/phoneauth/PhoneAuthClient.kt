@@ -1,19 +1,33 @@
 package dev.phoneauth
 
+import android.app.Activity
+import android.app.Application
+import android.content.Context
+import android.os.Bundle
+import android.os.SystemClock
 import android.util.Base64
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.DataInputStream
+import java.io.IOException
 import java.io.OutputStream
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.security.MessageDigest
 import java.security.cert.X509Certificate
+import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.X509TrustManager
@@ -25,8 +39,20 @@ import javax.net.ssl.X509TrustManager
  * validar. A confiança vem inteiramente do hash de SPKI capturado no QR durante
  * o pareamento — o que é mais forte que a PKI pública, porque não depende de
  * nenhuma autoridade terceira em quem você não escolheu confiar.
+ *
+ * O endereço do Mac, esse sim, é descartável: vem da descoberta mDNS, do cache
+ * ou do QR, e nenhuma das três origens vale como identidade. Trocar de IP não
+ * afrouxa nada — quem apresentar outra chave pública apanha do
+ * [PinnedTrustManager] igual, venha de onde vier.
+ *
+ * O [context] é opcional só para não quebrar quem já constrói o cliente sem
+ * ele; sem contexto não há como falar com o `NsdManager`, e aí sobra o endereço
+ * salvo no pareamento.
  */
-class PhoneAuthClient(private val scope: CoroutineScope) {
+class PhoneAuthClient(
+    private val scope: CoroutineScope,
+    context: Context? = null,
+) {
 
     data class Peer(
         val host: String,
@@ -62,9 +88,54 @@ class PhoneAuthClient(private val scope: CoroutineScope) {
     private val _pending = MutableStateFlow<AuthChallenge?>(null)
     val pending: StateFlow<AuthChallenge?> = _pending
 
-    private var socket: SSLSocket? = null
-    private var output: OutputStream? = null
-    private var peer: Peer? = null
+    private val appContext = context?.applicationContext
+    private val discovery = appContext?.let { NsdDiscovery(it) }
+
+    // Tocados pela thread de UI (connect/disconnect, ciclo de vida) e pela
+    // corrotina de IO ao mesmo tempo.
+    @Volatile private var socket: SSLSocket? = null
+    @Volatile private var output: OutputStream? = null
+    @Volatile private var peer: Peer? = null
+    @Volatile private var supervisor: Job? = null
+    @Volatile private var currentTarget: Target? = null
+    @Volatile private var sessionAuthenticated = false
+
+    /**
+     * Um único escritor por vez no socket. Com o keepalive rodando em paralelo
+     * com aprovação e resposta ao ping, dois `write` concorrentes intercalariam
+     * os bytes e o Mac veria um quadro corrompido.
+     */
+    private val sendGate = Mutex()
+
+    /**
+     * Geração do supervisor. Quem manda parar incrementa; tentativas velhas
+     * comparam antes de publicar estado, para não escreverem "falhou" por cima
+     * do Idle de quem acabou de desconectar.
+     */
+    private val supervisorGeneration = AtomicInteger(0)
+
+    /** Um endereço para tentar. Nada aqui é credencial — só onde discar. */
+    private class Target(val host: String, val address: InetAddress?, val port: Int)
+
+    private class SessionOutcome(val authenticated: Boolean, val reason: String)
+
+    init {
+        // Sem ninguém olhando a tela não há quem aprove nada; manter TLS aberto
+        // e reconectar em loop no background é bateria queimada à toa. Se der
+        // para observar o ciclo de vida do processo, o cliente se pausa
+        // sozinho — o app não precisa lembrar de fazer isso.
+        val application = appContext as? Application
+        if (application != null) {
+            val watcher = ForegroundWatcher()
+            application.registerActivityLifecycleCallbacks(watcher)
+            // A Application vive para sempre e seguraria este cliente junto.
+            // O escopo de quem nos criou (o `lifecycleScope` da Activity) morre
+            // com a tela, e é esse o momento de soltar o watcher.
+            scope.coroutineContext[Job]?.invokeOnCompletion {
+                application.unregisterActivityLifecycleCallbacks(watcher)
+            }
+        }
+    }
 
     // MARK: - Pinning
 
@@ -94,15 +165,43 @@ class PhoneAuthClient(private val scope: CoroutineScope) {
     }
 
     companion object {
-        fun openPinnedSocket(host: String, port: Int, spkiHex: String, timeoutMs: Int = 10_000): SSLSocket {
+        fun openPinnedSocket(host: String, port: Int, spkiHex: String, timeoutMs: Int = 10_000): SSLSocket =
+            openPinnedSocket(InetSocketAddress(host, port), host, spkiHex, timeoutMs)
+
+        /**
+         * Mesma coisa a partir de um endereço já resolvido — o caminho da
+         * descoberta, que evita mandar o resolvedor do sistema tentar de novo um
+         * IP que o mDNS acabou de entregar (e evita perder o escopo de um
+         * endereço IPv6 link-local no caminho).
+         */
+        fun openPinnedSocket(address: InetAddress, port: Int, spkiHex: String, timeoutMs: Int = 10_000): SSLSocket =
+            openPinnedSocket(
+                InetSocketAddress(address, port),
+                address.hostAddress ?: address.toString(),
+                spkiHex,
+                timeoutMs,
+            )
+
+        private fun openPinnedSocket(
+            endpoint: InetSocketAddress,
+            sniHost: String,
+            spkiHex: String,
+            timeoutMs: Int,
+        ): SSLSocket {
             val context = SSLContext.getInstance("TLSv1.3").apply {
                 init(null, arrayOf(PinnedTrustManager(spkiHex)), java.security.SecureRandom())
             }
             val raw = Socket()
-            raw.connect(InetSocketAddress(host, port), timeoutMs)
-            return (context.socketFactory.createSocket(raw, host, port, true) as SSLSocket).apply {
+            raw.connect(endpoint, timeoutMs)
+            return (context.socketFactory.createSocket(raw, sniHost, endpoint.port, true) as SSLSocket).apply {
                 enabledProtocols = arrayOf("TLSv1.3")
+                // Um host que aceita o TCP e depois emudece no meio do
+                // handshake travaria a tentativa para sempre. Depois do
+                // handshake o limite volta a ser infinito: quem quiser prazo de
+                // leitura define o seu.
+                soTimeout = timeoutMs
                 startHandshake()
+                soTimeout = 0
             }
         }
     }

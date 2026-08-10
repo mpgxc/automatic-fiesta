@@ -36,6 +36,15 @@ public enum SignedPayload {
     public static let pairDomain    = "PHONEAUTH-PAIR-V1"
     public static let helloDomain   = "PHONEAUTH-HELLO-V1"
 
+    /// Domínios da rotação de identidade (docs/rotacao-de-identidade.md).
+    ///
+    /// Acrescentados, nunca substituindo: os quatro acima têm vetores fixados
+    /// em docs/test-vectors.json e implementações gêmeas já escritas. Mudar um
+    /// byte deles invalidaria pareamentos existentes — que é exatamente o
+    /// problema que a rotação veio resolver.
+    public static let rotateDomain    = "PHONEAUTH-ROTATE-V1"
+    public static let rotateAckDomain = "PHONEAUTH-ROTATE-ACK-V1"
+
     // MARK: - Montagem
 
     private static func serialize(_ fields: [(name: String, value: String)]) throws -> Data {
@@ -138,6 +147,58 @@ public enum SignedPayload {
             ("domain",         helloDomain),
             ("deviceId",       deviceId),
             ("nonce",          nonceBase64),
+            ("channelBinding", channelBinding),
+        ])
+    }
+
+    // MARK: - Rotação de identidade
+
+    /// Anúncio de rotação, assinado pela chave privada **TLS atual** do daemon.
+    ///
+    /// A chave que sai assina a chave que entra — é o único mecanismo
+    /// disponível, porque a chave TLS é a única coisa do daemon em que o
+    /// celular já confia.
+    ///
+    /// Reusar a chave TLS para assinar dados de aplicação é seguro aqui por
+    /// separação de domínio: o `CertificateVerify` do TLS 1.3 (RFC 8446
+    /// §4.4.3) cobre bytes que começam obrigatoriamente com 64 bytes 0x20,
+    /// enquanto isto começa com "PHONEAUTH-ROTATE-V1\n". Nenhuma entrada é
+    /// aceita pelos dois. Depende de o listener só falar TLS 1.3, que é o caso.
+    public static func rotateBytes(rotationId: String,
+                                   currentSpki: String,
+                                   nextSpki: String,
+                                   announcedAt: Int64,
+                                   commitNotBefore: Int64,
+                                   expiresAt: Int64,
+                                   retirePrevious: Bool) throws -> Data {
+        try serialize([
+            ("domain",          rotateDomain),
+            ("rotationId",      rotationId),
+            ("currentSpki",     currentSpki),
+            ("nextSpki",        nextSpki),
+            ("announcedAt",     String(announcedAt)),
+            ("commitNotBefore", String(commitNotBefore)),
+            ("expiresAt",       String(expiresAt)),
+            ("retirePrevious",  retirePrevious ? "true" : "false"),
+        ])
+    }
+
+    /// Reconhecimento do anúncio, assinado pela `idKey` — sem biometria.
+    ///
+    /// Não autoriza nada; responde à pergunta operacional "quem já sabe do pin
+    /// novo?", que é o que decide se comitar tranca alguém para fora. É
+    /// assinado porque um ack forjado convenceria o operador a comitar cedo
+    /// demais, e o `channelBinding` na última linha impede que um ack gravado
+    /// seja reapresentado numa rotação futura.
+    public static func rotateAckBytes(rotationId: String,
+                                      deviceId: String,
+                                      adoptedSpki: String,
+                                      channelBinding: String) throws -> Data {
+        try serialize([
+            ("domain",         rotateAckDomain),
+            ("rotationId",     rotationId),
+            ("deviceId",       deviceId),
+            ("adoptedSpki",    adoptedSpki),
             ("channelBinding", channelBinding),
         ])
     }

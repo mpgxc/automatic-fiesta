@@ -36,5 +36,22 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+            Sem intent-filter e com exported="false": esta tela é um passo do
+            pareamento, e nada fora do app tem motivo para abrir a câmera em
+            nome dele.
+
+            A orientação é travada porque uma recriação da activity no meio do
+            handshake cancelaria o coroutine e derrubaria a conexão — e a sessão
+            de pareamento é de uso único e vale 120 s, então não existe "tentar
+            de novo" transparente: o usuário teria que gerar outro QR no Mac.
+        -->
+        <activity
+            android:name=".PairingActivity"
+            android:exported="false"
+            android:label="Parear"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
     </application>
 </manifest>
