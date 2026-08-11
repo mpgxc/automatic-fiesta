@@ -54,6 +54,18 @@ class MainActivity : FragmentActivity() {
         pairedPeer.value = store.load()
         pairedPeer.value?.let { client.connect(it) }
 
+        // A rotação troca o conjunto de pins em tempo de execução. Sem
+        // persistir, ela valeria só até o app fechar — e na abertura seguinte o
+        // celular voltaria a confiar apenas na chave que o Mac já aposentou,
+        // que é precisamente o repareamento que a rotação existe para evitar.
+        client.onPinsChanged = { pins ->
+            pairedPeer.value?.let { current ->
+                val updated = current.copy(pins = pins)
+                pairedPeer.value = updated
+                store.save(updated)
+            }
+        }
+
         setContent {
             MaterialTheme(colorScheme = if (isSystemInDarkThemeCompat()) darkColorScheme() else lightColorScheme()) {
                 Surface(Modifier.fillMaxSize()) {
@@ -248,7 +260,7 @@ class PeerStore(context: android.content.Context) {
         prefs.edit()
             .putString("host", peer.host)
             .putInt("port", peer.port)
-            .putString("spki", peer.spki)
+            .putStringSet("pins", peer.pins.toSet())
             .putString("name", peer.name)
             .putString("deviceId", peer.deviceId)
             .apply()
@@ -259,7 +271,10 @@ class PeerStore(context: android.content.Context) {
         return PhoneAuthClient.Peer(
             host = host,
             port = prefs.getInt("port", 58731),
-            spki = prefs.getString("spki", "") ?: "",
+            // Migração do formato antigo: quem pareou antes da rotação existir
+            // tem um `spki` só. Vira um conjunto de um elemento.
+            pins = prefs.getStringSet("pins", null)?.toList()
+                ?: listOfNotNull(prefs.getString("spki", null)),
             name = prefs.getString("name", "Mac") ?: "Mac",
             deviceId = prefs.getString("deviceId", null),
         )

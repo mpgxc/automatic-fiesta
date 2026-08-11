@@ -20,6 +20,16 @@ object SignedPayload {
     const val PAIR_DOMAIN = "PHONEAUTH-PAIR-V1"
     const val HELLO_DOMAIN = "PHONEAUTH-HELLO-V1"
 
+    /**
+     * Domínios da rotação de identidade (docs/rotacao-de-identidade.md).
+     *
+     * Acrescentados, nunca substituindo: os quatro acima têm vetores fixados em
+     * docs/test-vectors.json. Mudar um byte deles invalidaria pareamentos
+     * existentes — que é exatamente o problema que a rotação veio resolver.
+     */
+    const val ROTATE_DOMAIN = "PHONEAUTH-ROTATE-V1"
+    const val ROTATE_ACK_DOMAIN = "PHONEAUTH-ROTATE-ACK-V1"
+
     class NewlineInFieldException(field: String) :
         IllegalArgumentException("campo '$field' contém quebra de linha, o que tornaria o payload ambíguo")
 
@@ -129,6 +139,56 @@ object SignedPayload {
             "domain" to HELLO_DOMAIN,
             "deviceId" to deviceId,
             "nonce" to nonceBase64,
+            "channelBinding" to channelBinding,
+        )
+    )
+
+    /**
+     * O anúncio de rotação, assinado pela chave TLS que está saindo.
+     *
+     * `retirePrevious` vira a string literal "true"/"false" — a serialização é
+     * linha a linha, e cada linguagem formata booleano do seu jeito. Um `False`
+     * maiúsculo do Python ou um `1` do C quebrariam a assinatura sem quebrar
+     * nada visível.
+     */
+    fun rotateBytes(
+        rotationId: String,
+        currentSpki: String,
+        nextSpki: String,
+        announcedAt: Long,
+        commitNotBefore: Long,
+        expiresAt: Long,
+        retirePrevious: Boolean,
+    ): ByteArray = serialize(
+        listOf(
+            "domain" to ROTATE_DOMAIN,
+            "rotationId" to rotationId,
+            "currentSpki" to currentSpki,
+            "nextSpki" to nextSpki,
+            "announcedAt" to announcedAt.toString(),
+            "commitNotBefore" to commitNotBefore.toString(),
+            "expiresAt" to expiresAt.toString(),
+            "retirePrevious" to if (retirePrevious) "true" else "false",
+        )
+    )
+
+    /**
+     * Reconhecimento do anúncio, assinado pela `idKey` — sem biometria.
+     *
+     * Não autoriza nada: responde "quem já sabe do pin novo?", que é o que
+     * decide se comitar tranca alguém para fora.
+     */
+    fun rotateAckBytes(
+        rotationId: String,
+        deviceId: String,
+        adoptedSpki: String,
+        channelBinding: String,
+    ): ByteArray = serialize(
+        listOf(
+            "domain" to ROTATE_ACK_DOMAIN,
+            "rotationId" to rotationId,
+            "deviceId" to deviceId,
+            "adoptedSpki" to adoptedSpki,
             "channelBinding" to channelBinding,
         )
     )

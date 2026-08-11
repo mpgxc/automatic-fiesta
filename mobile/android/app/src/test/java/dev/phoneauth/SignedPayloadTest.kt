@@ -217,6 +217,68 @@ class SignedPayloadTest {
         }
     }
 
+    // ── Rotação de identidade ────────────────────────────────────────────
+    //
+    // Hoje só macOS e Android implementam estes domínios. Os vetores garantem
+    // que os dois produzem os mesmos bytes — sem eles, o gêmeo escrito depois
+    // nasceria sem rede de proteção.
+
+    @Test
+    fun `anúncio de rotação bate com o vetor`() {
+        val bytes = SignedPayload.rotateBytes(
+            rotationId = "5D8C7B6A-0000-4000-8000-000000000003",
+            currentSpki = "c".repeat(64),
+            nextSpki = "d".repeat(64),
+            announcedAt = 1_770_000_000L,
+            commitNotBefore = 1_770_086_400L,
+            expiresAt = 1_770_604_800L,
+            retirePrevious = true,
+        )
+        assertEquals(225, bytes.size)
+        assertEquals(
+            "a1d0e476d71f7e9182e2c8a1004f9242c266e634b67110b1def4535d1d33a3a5",
+            SignedPayload.sha256Hex(bytes),
+        )
+    }
+
+    /**
+     * `retirePrevious` vira string literal. As duas formas ficam travadas
+     * porque cada linguagem formata booleano do seu jeito, e um `False`
+     * maiúsculo quebraria a assinatura sem quebrar nada visível.
+     */
+    @Test
+    fun `anúncio sem aposentar o pin antigo bate com o vetor`() {
+        val bytes = SignedPayload.rotateBytes(
+            rotationId = "5D8C7B6A-0000-4000-8000-000000000003",
+            currentSpki = "c".repeat(64),
+            nextSpki = "d".repeat(64),
+            announcedAt = 1_770_000_000L,
+            commitNotBefore = 1_770_086_400L,
+            expiresAt = 1_770_604_800L,
+            retirePrevious = false,
+        )
+        assertEquals(226, bytes.size)
+        assertEquals(
+            "dce03083efc8e9839c57de6329c9ac0ec2c9e668856df97fdc389b2add94c752",
+            SignedPayload.sha256Hex(bytes),
+        )
+    }
+
+    @Test
+    fun `ack de rotação bate com o vetor`() {
+        val bytes = SignedPayload.rotateAckBytes(
+            rotationId = "5D8C7B6A-0000-4000-8000-000000000003",
+            deviceId = "9C1D2E3F-0000-4000-8000-000000000002",
+            adoptedSpki = "d".repeat(64),
+            channelBinding = "a".repeat(64),
+        )
+        assertEquals(228, bytes.size)
+        assertEquals(
+            "73f0520475788b394d3149a6b489f7e4a26571f9b12a606501b9fc8be2240279",
+            SignedPayload.sha256Hex(bytes),
+        )
+    }
+
     /**
      * O Sas do PhoneAuthClient.kt é HKDF escrito à mão e é a criptografia de
      * maior risco do app Android — e não havia nada exercitando. O vetor vem de

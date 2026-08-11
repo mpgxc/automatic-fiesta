@@ -58,10 +58,21 @@ class PhoneAuthClient(
     data class Peer(
         val host: String,
         val port: Int,
-        val spki: String,       // hex do SHA-256 do SPKI; o valor pinado
+        /**
+         * Hashes de SPKI aceitos, no máximo dois.
+         *
+         * Conjunto e não valor único porque é o que permite rotacionar a
+         * identidade do daemon sem repareamento: durante a janela, o antigo e o
+         * novo valem ao mesmo tempo. Fora dela tem exatamente um elemento — o
+         * cliente colapsa assim que confirma que o novo funciona.
+         */
+        val pins: List<String>,
         val name: String,
         val deviceId: String?,
-    )
+    ) {
+        /** O pin do pareamento, para caches e telas. Nunca para decidir confiança. */
+        val primaryPin: String get() = pins.first()
+    }
 
     data class AuthChallenge(
         val requestId: String,
@@ -109,6 +120,16 @@ class PhoneAuthClient(
      * com aprovação e resposta ao ping, dois `write` concorrentes intercalariam
      * os bytes e o Mac veria um quadro corrompido.
      */
+    /**
+     * Hash do SPKI do certificado **desta** conexão.
+     *
+     * O `channelBinding` sai daqui e não de `peer.pins`. A confusão entre "em
+     * quem confio" e "com quem estou falando agora" era o que tornava a rotação
+     * impossível: no instante em que o certificado mudasse, toda assinatura
+     * passaria a cobrir um binding que não é o da conexão viva.
+     */
+    @Volatile private var sessionBinding: String? = null
+
     private val sendGate = Mutex()
 
     /**
@@ -153,16 +174,17 @@ class PhoneAuthClient(
      * Aceita exatamente uma chave pública: a que foi vista no QR. Substitui
      * inteiramente a validação de cadeia.
      */
-    class PinnedTrustManager(private val expectedSpkiHex: String) : X509TrustManager {
+    class PinnedTrustManager(private val accepted: Collection<String>) : X509TrustManager {
+
         override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {
             val leaf = chain.firstOrNull()
                 ?: throw java.security.cert.CertificateException("cadeia vazia")
             val actual = MessageDigest.getInstance("SHA-256")
                 .digest(leaf.publicKey.encoded)
                 .joinToString("") { "%02x".format(it) }
-            if (actual != expectedSpkiHex) {
+            if (actual !in accepted) {
                 throw java.security.cert.CertificateException(
-                    "chave do servidor não confere com a pinada no pareamento"
+                    "chave do servidor não confere com nenhum pin do pareamento"
                 )
             }
         }
@@ -189,8 +211,8 @@ class PhoneAuthClient(
         /** Abaixo disto a sessão não conta como saudável para zerar o backoff. */
         private const val HEALTHY_SESSION_MS = 10_000L
 
-        fun openPinnedSocket(host: String, port: Int, spkiHex: String, timeoutMs: Int = 10_000): SSLSocket =
-            openPinnedSocket(InetSocketAddress(host, port), host, spkiHex, timeoutMs)
+        fun openPinnedSocket(host: String, port: Int, pins: Collection<String>, timeoutMs: Int = 10_000): SSLSocket =
+            openPinnedSocket(InetSocketAddress(host, port), host, pins, timeoutMs)
 
         /**
          * Mesma coisa a partir de um endereço já resolvido — o caminho da
@@ -198,22 +220,23 @@ class PhoneAuthClient(
          * IP que o mDNS acabou de entregar (e evita perder o escopo de um
          * endereço IPv6 link-local no caminho).
          */
-        fun openPinnedSocket(address: InetAddress, port: Int, spkiHex: String, timeoutMs: Int = 10_000): SSLSocket =
+        fun openPinnedSocket(address: InetAddress, port: Int, pins: Collection<String>, timeoutMs: Int = 10_000): SSLSocket =
             openPinnedSocket(
                 InetSocketAddress(address, port),
                 address.hostAddress ?: address.toString(),
-                spkiHex,
+                pins,
                 timeoutMs,
             )
 
         private fun openPinnedSocket(
             endpoint: InetSocketAddress,
             sniHost: String,
-            spkiHex: String,
+            pins: Collection<String>,
             timeoutMs: Int,
         ): SSLSocket {
+            require(pins.isNotEmpty()) { "conjunto de pins vazio aceitaria qualquer certificado" }
             val context = SSLContext.getInstance("TLSv1.3").apply {
-                init(null, arrayOf(PinnedTrustManager(spkiHex)), java.security.SecureRandom())
+                init(null, arrayOf(PinnedTrustManager(pins)), java.security.SecureRandom())
             }
             val raw = Socket()
             raw.connect(endpoint, timeoutMs)
@@ -381,15 +404,19 @@ class PhoneAuthClient(
         }
     }
 
-    private fun openFirst(targets: List<Target>, spkiHex: String, timeoutMs: Int): Pair<SSLSocket, Target> {
+    private fun openFirst(targets: List<Target>, pins: Collection<String>, timeoutMs: Int): Pair<SSLSocket, Target> {
         var last: Exception? = null
         for (target in targets) {
             try {
                 val ssl = if (target.address != null) {
-                    openPinnedSocket(target.address, target.port, spkiHex, timeoutMs)
+                    openPinnedSocket(target.address, target.port, pins, timeoutMs)
                 } else {
-                    openPinnedSocket(target.host, target.port, spkiHex, timeoutMs)
+                    openPinnedSocket(target.host, target.port, pins, timeoutMs)
                 }
+                // O binding sai do certificado desta conexão, aqui, no único
+                // ponto por onde toda conexão passa. Ver §8.1.2 do doc de
+                // rotação.
+                sessionBinding = ssl.spkiHex()
                 return ssl to target
             } catch (e: Exception) {
                 // Reprovar no pinning cai aqui: existe *algo* naquele endereço,
@@ -420,7 +447,7 @@ class PhoneAuthClient(
         direct.getOrPut("${peer.host}:${peer.port}") { Target(peer.host, null, peer.port) }
 
         return try {
-            openFirst(direct.values.toList(), peer.spki, CONNECT_TIMEOUT_MS)
+            openFirst(direct.values.toList(), peer.pins, CONNECT_TIMEOUT_MS)
         } catch (unreachable: Exception) {
             val discovered = discovery?.find(preferredName = peer.name).orEmpty()
                 .map { Target(it.address.hostAddress ?: it.address.toString(), it.address, it.port) }
@@ -428,9 +455,15 @@ class PhoneAuthClient(
             // Sem nada novo para tentar, o erro que interessa é o da tentativa
             // direta — "não achei ninguém" esconderia o motivo real.
             if (discovered.isEmpty()) throw unreachable
-            openFirst(discovered, peer.spki, CONNECT_TIMEOUT_MS)
+            openFirst(discovered, peer.pins, CONNECT_TIMEOUT_MS)
         }
     }
+
+    /** Hash do SPKI do certificado que o servidor apresentou nesta sessão. */
+    private fun SSLSocket.spkiHex(): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(session.peerCertificates[0].publicKey.encoded)
+            .joinToString("") { "%02x".format(it) }
 
     // MARK: - Cache de endereço
 
@@ -444,7 +477,9 @@ class PhoneAuthClient(
      */
     private fun rememberedAddress(peer: Peer): Target? {
         val prefs = addressCache ?: return null
-        if (prefs.getString("spki", null) != peer.spki) return null
+        // Pertence ao conjunto, não igualdade: durante a rotação o pin muda e
+        // o endereço memorizado continua válido — ele nunca foi credencial.
+        if (prefs.getString("spki", null) !in peer.pins) return null
         val host = prefs.getString("host", null) ?: return null
         val port = prefs.getInt("port", 0)
         if (port <= 0) return null
@@ -543,11 +578,12 @@ class PhoneAuthClient(
             "hello.challenge" -> {
                 val peer = peer ?: return
                 val deviceId = peer.deviceId ?: return
+                val binding = sessionBinding ?: return
                 try {
                     val bytes = SignedPayload.helloBytes(
                         deviceId = deviceId,
                         nonceBase64 = message.getString("nonce"),
-                        channelBinding = peer.spki,
+                        channelBinding = binding,
                     )
                     // Chave de identidade: sem biometria, de propósito.
                     // Reconectar não pode custar um toque do dedo.
@@ -561,7 +597,7 @@ class PhoneAuthClient(
                     sessionAuthenticated = true
                     // Endereço que rendeu sessão de verdade: guarda para a
                     // próxima tentativa começar por ele, sem multicast.
-                    currentTarget?.let { rememberAddress(it.host, it.port, peer.spki) }
+                    currentTarget?.let { rememberAddress(it.host, it.port, peer.primaryPin) }
                 } catch (e: Exception) {
                     _state.value = State.Failed(e.message ?: "falha ao autenticar a sessão")
                 }
@@ -587,7 +623,22 @@ class PhoneAuthClient(
                 if (!challenge.isExpired) _pending.value = challenge
             }
 
+            "rotate.announce" -> handleRotateAnnounce(message)
+
             "ping" -> send(JSONObject().put("type", "pong"))
+
+            "pong" -> {
+                // Um pong sob um pin prova que aquela chave está viva e
+                // funcionando. Aí o outro elemento do conjunto perde a razão de
+                // existir — mantê-lo seria dobrar a superfície de confiança
+                // permanentemente por causa de uma janela de dias, ou seja,
+                // metade da rotação feita.
+                val binding = sessionBinding
+                val current = peer
+                if (binding != null && current != null && current.pins.size > 1 && binding in current.pins) {
+                    adoptPins(listOf(binding))
+                }
+            }
         }
     }
 
@@ -608,6 +659,121 @@ class PhoneAuthClient(
         Unit
     }
 
+    // MARK: - Rotação de identidade
+
+    /**
+     * Adota o pin novo anunciado pelo daemon.
+     *
+     * As seis verificações de §4.3 do doc de rotação, nesta ordem, todas
+     * obrigatórias. Falhando qualquer uma, ignora **em silêncio** — sem
+     * desconectar e sem avisar o servidor: um anúncio inválido é indistinguível
+     * de um ataque, e responder a ele só entregaria sinal.
+     *
+     * A chave que assina o anúncio é a chave TLS que está saindo — a única que
+     * o celular já confia. É o mesmo mecanismo de qualquer rollover (DNSSEC,
+     * TUF, backup pin do HPKP): quem sai assina quem entra.
+     */
+    private suspend fun handleRotateAnnounce(message: JSONObject) {
+        val peer = peer ?: return
+        val deviceId = peer.deviceId ?: return
+        val binding = sessionBinding ?: return
+
+        val rotationId = message.optString("rotationId")
+        val currentSpki = message.optString("currentSpki")
+        val nextSpki = message.optString("nextSpki")
+        val currentDer = runCatching {
+            Base64.decode(message.optString("currentSpkiDer"), Base64.DEFAULT)
+        }.getOrNull() ?: return
+        val announcedAt = message.optLong("announcedAt")
+        val expiresAt = message.optLong("expiresAt")
+        val commitNotBefore = message.optLong("commitNotBefore")
+        val retirePrevious = message.optBoolean("retirePrevious")
+
+        // 1 · o DER entregue é mesmo a chave que ele diz ser
+        val derHash = MessageDigest.getInstance("SHA-256").digest(currentDer)
+            .joinToString("") { "%02x".format(it) }
+        if (derHash != currentSpki) return
+
+        // 2 · já confio nessa chave
+        if (currentSpki !in peer.pins) return
+
+        // 3 · é o certificado DESTA conexão — mata a reapresentação de um
+        //     anúncio gravado noutra
+        if (currentSpki != binding) return
+
+        // 4 · a assinatura fecha sob a chave que está saindo
+        val signed = SignedPayload.rotateBytes(
+            rotationId = rotationId,
+            currentSpki = currentSpki,
+            nextSpki = nextSpki,
+            announcedAt = announcedAt,
+            commitNotBefore = commitNotBefore,
+            expiresAt = expiresAt,
+            retirePrevious = retirePrevious,
+        )
+        val ok = runCatching {
+            java.security.Signature.getInstance("SHA256withECDSA").run {
+                initVerify(
+                    java.security.KeyFactory.getInstance("EC")
+                        .generatePublic(java.security.spec.X509EncodedKeySpec(currentDer))
+                )
+                update(signed)
+                verify(Base64.decode(message.optString("signature"), Base64.NO_WRAP))
+            }
+        }.getOrDefault(false)
+        if (!ok) return
+
+        // 5 · dentro da janela
+        val now = System.currentTimeMillis() / 1000
+        if (now < announcedAt || now > expiresAt) return
+
+        // 6 · o pin novo é plausível e realmente novo
+        if (nextSpki.length != 64 || !nextSpki.all { it in "0123456789abcdef" }) return
+        if (nextSpki == currentSpki) return
+
+        adoptPins(if (retirePrevious) listOf(nextSpki) else listOf(currentSpki, nextSpki))
+
+        // O ack é assinado pela idKey, sem biometria. Ele não autoriza nada —
+        // responde "quem já sabe do pin novo?", que é o que o daemon usa para
+        // decidir se comitar trancaria alguém para fora.
+        runCatching {
+            val ackBytes = SignedPayload.rotateAckBytes(
+                rotationId = rotationId,
+                deviceId = deviceId,
+                adoptedSpki = nextSpki,
+                channelBinding = binding,
+            )
+            send(
+                JSONObject()
+                    .put("type", "rotate.ack")
+                    .put("rotationId", rotationId)
+                    .put("deviceId", deviceId)
+                    .put("adoptedSpki", nextSpki)
+                    .put("signature", DeviceKeys.signWithIdentityKey(ackBytes))
+            )
+        }
+
+        if (retirePrevious) {
+            // A conexão atual está sob um certificado que acabou de deixar de
+            // ser confiável. Derruba e deixa o supervisor reconectar.
+            _state.value = State.Failed("identidade do Mac rotacionada; reconectando")
+            closeSocket()
+        }
+    }
+
+    /** Troca o conjunto de pins e persiste, sem tocar em mais nada do peer. */
+    private fun adoptPins(pins: List<String>) {
+        val current = peer ?: return
+        peer = current.copy(pins = pins)
+        onPinsChanged?.invoke(pins)
+    }
+
+    /**
+     * Chamado quando o conjunto de pins muda, para quem guarda o peer persistir.
+     * Sem isto a rotação valeria só até o app fechar.
+     */
+    var onPinsChanged: ((List<String>) -> Unit)? = null
+
     // MARK: - Decisão do usuário
 
     /**
@@ -621,7 +787,7 @@ class PhoneAuthClient(
             requestId = challenge.requestId,
             challengeBase64 = challenge.challenge,
             contextHash = SignedPayload.contextHash(challenge.context),
-            channelBinding = peer.spki,
+            channelBinding = sessionBinding ?: return,
             issuedAt = challenge.issuedAt,
             decision = SignedPayload.Decision.ALLOW,
         )
@@ -761,7 +927,8 @@ class PhoneAuthClient(
             // endereço que acabou de funcionar vai para o cache, para a
             // primeira conexão depois do pareamento ser instantânea.
             rememberAddress(opened.second.host, opened.second.port, spki)
-            Peer(host, port, spki, name, response.getString("deviceId"))
+            // No pareamento o conjunto tem um elemento só: o pin do QR.
+            Peer(host, port, listOf(spki), name, response.getString("deviceId"))
         } finally {
             runCatching { ssl.close() }
         }
