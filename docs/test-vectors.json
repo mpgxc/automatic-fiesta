@@ -53,6 +53,30 @@
     "bytesLen": 166,
     "sha256": "e2d35c4b5772349157abfd31905482f68b76d05d3d4359b0db30640dcfe74977"
   },
+  "rotate": {
+    "rotationId": "5D8C7B6A-0000-4000-8000-000000000003",
+    "currentSpki": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "nextSpki": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "announcedAt": 1770000000,
+    "commitNotBefore": 1770086400,
+    "expiresAt": 1770604800,
+    "retirePrevious": true,
+    "bytesLen": 225,
+    "sha256": "a1d0e476d71f7e9182e2c8a1004f9242c266e634b67110b1def4535d1d33a3a5"
+  },
+  "rotateNoRetire": {
+    "retirePrevious": false,
+    "bytesLen": 226,
+    "sha256": "dce03083efc8e9839c57de6329c9ac0ec2c9e668856df97fdc389b2add94c752"
+  },
+  "rotateAck": {
+    "rotationId": "5D8C7B6A-0000-4000-8000-000000000003",
+    "deviceId": "9C1D2E3F-0000-4000-8000-000000000002",
+    "adoptedSpki": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "channelBinding": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "bytesLen": 228,
+    "sha256": "73f0520475788b394d3149a6b489f7e4a26571f9b12a606501b9fc8be2240279"
+  },
   "pairingProof": {
     "pskB64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
     "proofB64": "5NKfx1QzKzZ2hezIOWZhpWskuVniqL3bEmygrKEAKwI="

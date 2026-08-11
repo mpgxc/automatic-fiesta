@@ -45,18 +45,20 @@ impossível sem o dedo dele".
 
 | Componente | O que é | Situação |
 |---|---|---|
-| `macos/pam/pam_phoneauth.c` | Módulo PAM que intercepta `sudo`/`su`/screensaver | Escrito, não compilado |
+| `macos/pam/pam_phoneauth.c` | Módulo PAM que intercepta `sudo`/`su`/screensaver | **Compilado, ~130 testes sob ASan+UBSan** |
+| `docs/test-vectors.json` | 9 vetores da serialização assinada | **Calculados e conferidos** |
 | `macos/Sources/PhoneAuthCore` | Protocolo, payloads assinados, registro de dispositivos | Escrito, não compilado |
-| `macos/Sources/phoneauthd` | Daemon: socket Unix + listener TLS + Bonjour | Escrito, não compilado |
-| `macos/Sources/phoneauthctl` | CLI: parear, listar, revogar, status | Escrito, não compilado |
-| `mobile/ios` | SwiftUI + Secure Enclave | Escrito, não compilado |
-| `mobile/android` | Compose + Keystore/StrongBox | Escrito, não compilado |
+| `macos/Sources/phoneauthd` | Daemon: socket Unix + TLS + Bonjour + rotação de identidade | Escrito, não compilado |
+| `macos/Sources/phoneauthctl` | CLI: parear, listar, revogar, rotacionar, status | Escrito, não compilado |
+| `mobile/ios` | SwiftUI + Secure Enclave + descoberta Bonjour | Escrito, não compilado |
+| `mobile/android` | Compose + Keystore/StrongBox + descoberta NSD | Kotlin do cliente passou type-check; telas não compiladas |
 
-> **Nada disto foi compilado ou executado.** Foi desenvolvido num container
-> Linux sem Swift, sem Xcode e sem SDK do Android. Trate como um primeiro corte
-> revisável: o desenho e o protocolo estão fechados, o código precisa da
-> primeira passada de compilação num Mac. Veja [docs/status.md](docs/status.md)
-> para a lista do que exatamente falta verificar.
+> **Fora o módulo PAM e os vetores, nada foi compilado.** Foi desenvolvido num
+> container Linux sem Swift, sem Xcode e sem SDK do Android. Trate como um
+> primeiro corte revisável: o desenho e o protocolo estão fechados, o Swift
+> precisa da primeira passada de compilação num Mac. Veja
+> [docs/status.md](docs/status.md) para a fronteira exata entre verificado e
+> escrito.
 
 ## Documentação
 

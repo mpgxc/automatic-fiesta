@@ -53,6 +53,34 @@ hello_bytes = ser("PHONEAUTH-HELLO-V1", ["9C1D2E3F-0000-4000-8000-000000000002",
 V['hello'] = {'deviceId':"9C1D2E3F-0000-4000-8000-000000000002",'nonceB64':nonce_b64,
               'channelBinding':binding,'bytesLen':len(hello_bytes),'sha256': sha(hello_bytes)}
 
+# --- Rotação de identidade ---
+#
+# Domínios acrescentados por docs/rotacao-de-identidade.md. Hoje só o gêmeo
+# macOS os implementa; estes vetores existem para que os gêmeos iOS e Android
+# tenham contra o que conferir quando forem escritos — que é exatamente a falha
+# que este arquivo previne.
+#
+# `retirePrevious` entra como a string literal "true"/"false", não como booleano
+# JSON: a serialização é linha a linha, e cada linguagem formata booleano do seu
+# jeito.
+rot_id = "5D8C7B6A-0000-4000-8000-000000000003"
+cur_spki = "c"*64
+next_spki = "d"*64
+rot_fields = [rot_id, cur_spki, next_spki, "1770000000", "1770086400", "1770604800", "true"]
+rot_bytes = ser("PHONEAUTH-ROTATE-V1", rot_fields)
+V['rotate'] = {'rotationId':rot_id, 'currentSpki':cur_spki, 'nextSpki':next_spki,
+               'announcedAt':1770000000, 'commitNotBefore':1770086400, 'expiresAt':1770604800,
+               'retirePrevious':True, 'bytesLen':len(rot_bytes), 'sha256': sha(rot_bytes)}
+
+# Com retirePrevious=false, para travar a formatação do booleano nos dois casos.
+rot_false = ser("PHONEAUTH-ROTATE-V1", rot_fields[:-1] + ["false"])
+V['rotateNoRetire'] = {'retirePrevious':False, 'bytesLen':len(rot_false), 'sha256': sha(rot_false)}
+
+ack_dev = "9C1D2E3F-0000-4000-8000-000000000002"
+ack_bytes = ser("PHONEAUTH-ROTATE-ACK-V1", [rot_id, ack_dev, next_spki, binding])
+V['rotateAck'] = {'rotationId':rot_id, 'deviceId':ack_dev, 'adoptedSpki':next_spki,
+                  'channelBinding':binding, 'bytesLen':len(ack_bytes), 'sha256': sha(ack_bytes)}
+
 # --- HMAC de pareamento e SAS ---
 psk = bytes(range(32))
 proof = hmac.new(psk, pair_bytes, hashlib.sha256).digest()

@@ -112,6 +112,68 @@ final class SignedPayloadTests: XCTestCase {
                        "e2d35c4b5772349157abfd31905482f68b76d05d3d4359b0db30640dcfe74977")
     }
 
+    // MARK: - Rotação de identidade
+
+    /// Hoje só o gêmeo macOS implementa estes domínios. Os vetores existem para
+    /// que iOS e Android tenham contra o que conferir quando forem escritos —
+    /// sem eles, os gêmeos nasceriam sem rede de proteção, que é exatamente a
+    /// falha que `docs/test-vectors.json` previne.
+    func testRotatePayloadMatchesVector() throws {
+        let bytes = try SignedPayload.rotateBytes(
+            rotationId: "5D8C7B6A-0000-4000-8000-000000000003",
+            currentSpki: String(repeating: "c", count: 64),
+            nextSpki: String(repeating: "d", count: 64),
+            announcedAt: 1_770_000_000,
+            commitNotBefore: 1_770_086_400,
+            expiresAt: 1_770_604_800,
+            retirePrevious: true
+        )
+        XCTAssertEqual(bytes.count, 225)
+        XCTAssertEqual(sha256Hex(bytes),
+                       "a1d0e476d71f7e9182e2c8a1004f9242c266e634b67110b1def4535d1d33a3a5")
+    }
+
+    /// `retirePrevious` vira a string literal "true"/"false" na serialização.
+    /// Este teste trava as duas formas, porque cada linguagem formata booleano
+    /// do seu jeito e um `False` maiúsculo do Python ou um `1` do C quebrariam
+    /// a assinatura sem quebrar nada visível.
+    func testRotatePayloadWithoutRetireMatchesVector() throws {
+        let bytes = try SignedPayload.rotateBytes(
+            rotationId: "5D8C7B6A-0000-4000-8000-000000000003",
+            currentSpki: String(repeating: "c", count: 64),
+            nextSpki: String(repeating: "d", count: 64),
+            announcedAt: 1_770_000_000,
+            commitNotBefore: 1_770_086_400,
+            expiresAt: 1_770_604_800,
+            retirePrevious: false
+        )
+        XCTAssertEqual(bytes.count, 226)
+        XCTAssertEqual(sha256Hex(bytes),
+                       "dce03083efc8e9839c57de6329c9ac0ec2c9e668856df97fdc389b2add94c752")
+    }
+
+    func testRotateAckPayloadMatchesVector() throws {
+        let bytes = try SignedPayload.rotateAckBytes(
+            rotationId: "5D8C7B6A-0000-4000-8000-000000000003",
+            deviceId: "9C1D2E3F-0000-4000-8000-000000000002",
+            adoptedSpki: String(repeating: "d", count: 64),
+            channelBinding: String(repeating: "a", count: 64)
+        )
+        XCTAssertEqual(bytes.count, 228)
+        XCTAssertEqual(sha256Hex(bytes),
+                       "73f0520475788b394d3149a6b489f7e4a26571f9b12a606501b9fc8be2240279")
+    }
+
+    /// Os domínios da rotação são acrescentados, nunca substitutos. Se algum dia
+    /// colidirem com os quatro originais, uma assinatura de um contexto poderia
+    /// ser reapresentada como anúncio de rotação.
+    func testAllDomainsAreDistinct() {
+        let domains = [SignedPayload.authDomain, SignedPayload.contextDomain,
+                       SignedPayload.pairDomain, SignedPayload.helloDomain,
+                       SignedPayload.rotateDomain, SignedPayload.rotateAckDomain]
+        XCTAssertEqual(Set(domains).count, domains.count, "domínios duplicados permitiriam confusão de tipo")
+    }
+
     // MARK: - Rejeição de quebra de linha
 
     /// A regra que impede um `reason` malicioso de injetar linhas e fazer um
