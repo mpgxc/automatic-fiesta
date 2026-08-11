@@ -10,21 +10,22 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Escolha de runner, resumida — cada build na máquina que ele de fato exige:
+# Escopo atual: daemon macOS + app Android.
 #
-#   verify     ubuntu-latest   nada de Apple aqui; é o job barato e o que
-#                              verifica a maior parte das invariantes.
-#   apple      macos-15        daemon (alvo macOS 13) + módulo PAM + app iOS.
-#                              Deliberadamente NÃO é a mais nova: construir num
-#                              toolchain anterior prova que o daemon não passou
-#                              a depender de nada bleeding-edge. Ele precisa
-#                              rodar em Macs que ninguém atualizou.
-#   apple-ui   macos-26        Liquid Glass não existe antes do SDK 26.
-#   android    ubuntu-latest
+# O app iOS e a interface de barra de menu existem no repositório mas estão
+# FORA do CI de propósito. Os passos estão preservados abaixo, comentados, com
+# o que é preciso para religá-los.
 #
-# São dois runners macOS, não três: o app iOS divide a máquina com o daemon
-# porque em repositório privado o minuto de macOS custa 10x, e um terceiro
-# runner não compraria informação nova.
+# A consequência precisa ser dita: código sem CI apodrece. `mobile/ios` e
+# `macos/ui` vão acumular quebra silenciosa enquanto o core evolui — a correção
+# de subscript ambíguo de Data já teve que tocar o gêmeo iOS, e a próxima
+# ninguém vai perceber. Religar cedo é mais barato que consertar depois.
+#
+#   verify   ubuntu-latest   job barato; a maior parte das invariantes
+#   apple    macos-15        daemon + módulo PAM. Deliberadamente não a mais
+#                            nova: o daemon tem alvo macOS 13 e precisa rodar
+#                            em Macs que ninguém atualizou.
+#   android  ubuntu-latest
 
 jobs:
   # ───────────────────────────────────────────────────────────────────────────
@@ -73,6 +74,9 @@ jobs:
           diff -u docs/test-vectors.json /tmp/regenerated.json
 
       - name: Paridade dos três gêmeos de SignedPayload
+        # Continua cobrindo o gêmeo iOS mesmo com o iOS fora do CI: é análise de
+        # texto do fonte, roda em qualquer lugar, e é a única coisa que ainda
+        # segura aquele arquivo alinhado com o daemon.
         run: python3 docs/check-payload-parity.py
 
       - name: Protocolo ponta a ponta
@@ -81,10 +85,8 @@ jobs:
           python3 docs/protocol-harness.py
 
   # ───────────────────────────────────────────────────────────────────────────
-  # Daemon, CLI, módulo PAM e app iOS — tudo que NÃO precisa de macOS 26.
-  # ───────────────────────────────────────────────────────────────────────────
   apple:
-    name: Daemon, PAM e iOS (macOS 15)
+    name: Daemon e módulo PAM (macOS 15)
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -97,28 +99,26 @@ jobs:
 
       - name: Testes do core
         # Onde os vetores encontram a implementação Swift. Se passarem, a
-        # serialização está correta e os gêmeos iOS e Android têm alvo confiável.
+        # serialização está correta e o gêmeo Android tem alvo confiável.
         run: swift test --package-path macos
 
       - name: Módulo PAM com o clang do macOS
-        # O job de Ubuntu já testou o comportamento; aqui o que se verifica é
-        # que ele constrói como bundle no toolchain de destino real.
         run: |
           cd macos/pam
           make
           file pam_phoneauth.so
 
-      - name: Compilar o app iOS
-        # Sem .xcodeproj no repositório — um pbxproj é irrevisável em diff, e
-        # num projeto de autenticação é por ali que um entitlement entra sem
-        # ninguém ver. O Package.swift dá type-check completo, views SwiftUI
-        # incluídas, sem precisar de projeto.
-        run: |
-          cd mobile/ios
-          xcodebuild -scheme PhoneAuthKit \
-                     -destination 'generic/platform=iOS' \
-                     -skipPackagePluginValidation \
-                     build
+      # ── FORA DE ESCOPO ────────────────────────────────────────────────────
+      # App iOS. Custa pouco — divide este runner, que já está de pé — mas está
+      # fora do escopo atual. Para religar, descomente:
+      #
+      # - name: Compilar o app iOS
+      #   run: |
+      #     cd mobile/ios
+      #     xcodebuild -scheme PhoneAuthKit \
+      #                -destination 'generic/platform=iOS' \
+      #                -skipPackagePluginValidation \
+      #                build
 
       - uses: actions/upload-artifact@v4
         if: success()
@@ -129,49 +129,6 @@ jobs:
             macos/.build/release/phoneauthctl
             macos/pam/pam_phoneauth.so
           if-no-files-found: error
-          retention-days: 14
-
-  # ───────────────────────────────────────────────────────────────────────────
-  # App de barra de menu. Máquina explícita porque Liquid Glass não existe
-  # antes do SDK 26 — e sem `continue-on-error`: com a máquina certa, falhar
-  # aqui é falha de verdade e tem que ficar vermelho.
-  # ───────────────────────────────────────────────────────────────────────────
-  apple-ui:
-    name: Barra de menu, Liquid Glass (macOS 26)
-    runs-on: macos-26
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Confirmar o SDK
-        # Assertiva, não detecção. A versão do runner é escolhida acima; isto
-        # existe para a imagem não derivar em silêncio e passarmos a compilar
-        # contra um SDK antigo alegando sucesso — um build verde que não
-        # exercitou o código é pior que um build ausente.
-        run: |
-          sdk=$(xcrun --sdk macosx --show-sdk-version)
-          echo "SDK do macOS: $sdk"
-          case "$sdk" in
-            26.*|2[7-9].*|[3-9][0-9].*) ;;
-            *) echo "::error::runner macos-26 entregou SDK $sdk; Liquid Glass precisa de 26+"; exit 1 ;;
-          esac
-
-      - name: Build da UI
-        run: swift build -c release --package-path macos/ui
-
-      - name: Empacotar o .app
-        run: |
-          cd macos/ui
-          ./bundle.sh
-          # Sem bundle identifier o UNUserNotificationCenter falha em silêncio,
-          # então conferir que o Info.plist entrou é barato e pega regressão.
-          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' .build/PhoneAuth.app/Contents/Info.plist
-          /usr/libexec/PlistBuddy -c 'Print :LSUIElement' .build/PhoneAuth.app/Contents/Info.plist
-
-      - uses: actions/upload-artifact@v4
-        if: success()
-        with:
-          name: PhoneAuth-app-${{ github.sha }}
-          path: macos/ui/.build/PhoneAuth.app
           retention-days: 14
 
   # ───────────────────────────────────────────────────────────────────────────
@@ -193,6 +150,13 @@ jobs:
         # rodam sem emulador, no job mais barato possível.
         run: gradle --project-dir mobile/android testDebugUnitTest --no-daemon
 
+      - name: Lint
+        # Entra agora que o Android é escopo principal. Não falha o build: o
+        # lint do Android acusa muita coisa cosmética, e um job vermelho por
+        # motivo cosmético ensina a ignorar job vermelho.
+        continue-on-error: true
+        run: gradle --project-dir mobile/android lintDebug --no-daemon
+
       - name: Build do APK de debug
         run: gradle --project-dir mobile/android assembleDebug --no-daemon
 
@@ -202,3 +166,35 @@ jobs:
           name: phoneauth-android-${{ github.sha }}
           path: mobile/android/app/build/outputs/apk/debug/*.apk
           retention-days: 14
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FORA DE ESCOPO — interface de barra de menu com Liquid Glass.
+#
+# Era um runner macos-26 inteiro, e é o corte de custo mais relevante: em
+# repositório privado o minuto de macOS custa 10x, então este job sozinho
+# pesava mais que verify e android somados.
+#
+# Para religar, mova este bloco para dentro de `jobs:`:
+#
+#   apple-ui:
+#     name: Barra de menu, Liquid Glass (macOS 26)
+#     runs-on: macos-26
+#     steps:
+#       - uses: actions/checkout@v4
+#       - name: Confirmar o SDK
+#         run: |
+#           sdk=$(xcrun --sdk macosx --show-sdk-version)
+#           case "$sdk" in
+#             26.*|2[7-9].*|[3-9][0-9].*) ;;
+#             *) echo "::error::SDK $sdk; Liquid Glass precisa de 26+"; exit 1 ;;
+#           esac
+#       - name: Build da UI
+#         run: swift build -c release --package-path macos/ui
+#       - name: Empacotar o .app
+#         run: |
+#           cd macos/ui && ./bundle.sh
+#           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' .build/PhoneAuth.app/Contents/Info.plist
+#       - uses: actions/upload-artifact@v4
+#         with:
+#           name: PhoneAuth-app-${{ github.sha }}
+#           path: macos/ui/.build/PhoneAuth.app

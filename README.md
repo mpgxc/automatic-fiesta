@@ -47,19 +47,20 @@ impossível sem o dedo dele".
 |---|---|---|
 | `macos/pam/pam_phoneauth.c` | Módulo PAM que intercepta `sudo`/`su`/screensaver | **Compilado, ~130 testes sob ASan+UBSan** |
 | `docs/test-vectors.json` | 9 vetores da serialização assinada | **Calculados e conferidos** |
-| `macos/Sources/PhoneAuthCore` | Protocolo, payloads assinados, registro de dispositivos | Escrito, não compilado |
-| `macos/Sources/phoneauthd` | Daemon: socket Unix + TLS + Bonjour + rotação de identidade | Escrito, não compilado |
-| `macos/Sources/phoneauthctl` | CLI: parear, listar, revogar, rotacionar, status | Escrito, não compilado |
-| `macos/ui` | App de barra de menu: SwiftUI, Liquid Glass, notificações | Escrito, não compilado · exige macOS 26 |
-| `mobile/ios` | SwiftUI + Secure Enclave + descoberta Bonjour | Escrito, não compilado |
-| `mobile/android` | Compose + Keystore/StrongBox + descoberta NSD | Kotlin do cliente passou type-check; telas não compiladas |
+| `macos/Sources/PhoneAuthCore` | Protocolo, payloads assinados, registro de dispositivos | **Compila e testa no CI** |
+| `macos/Sources/phoneauthd` | Daemon: socket Unix + TLS + Bonjour + rotação de identidade | **Compila e testa no CI** (macOS 15) |
+| `macos/Sources/phoneauthctl` | CLI: parear, listar, revogar, rotacionar, status | **Compila no CI** |
+| `macos/ui` | App de barra de menu: SwiftUI, Liquid Glass, notificações | **Fora do escopo atual** · escrito, fora do CI |
+| `mobile/ios` | SwiftUI + Secure Enclave + descoberta Bonjour | **Fora do escopo atual** · escrito, fora do CI |
+| `mobile/android` | Compose + Keystore/StrongBox + descoberta NSD | **Construído no CI** · APK de debug como artefato |
 
-> **Fora o módulo PAM e os vetores, nada foi compilado.** Foi desenvolvido num
-> container Linux sem Swift, sem Xcode e sem SDK do Android. Trate como um
-> primeiro corte revisável: o desenho e o protocolo estão fechados, o Swift
-> precisa da primeira passada de compilação num Mac. Veja
-> [docs/status.md](docs/status.md) para a fronteira exata entre verificado e
-> escrito.
+> **Escopo atual: daemon macOS + app Android.** O app iOS e a interface de barra
+> de menu estão escritos e no repositório, mas fora do CI — e código sem CI
+> apodrece, então trate os dois como material a religar, não como pronto.
+>
+> O que o CI cobre de fato está em [docs/status.md](docs/status.md). Compilar não
+> é o mesmo que funcionar: nada disto rodou ainda contra hardware real, e nenhuma
+> auditoria externa foi feita.
 
 ## Documentação
 
