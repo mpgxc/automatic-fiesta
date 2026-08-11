@@ -73,10 +73,10 @@ public enum Verifier {
             info: info,
             outputByteCount: 4
         )
-        let bytes = derived.withUnsafeBytes { Data($0) }
-        let value = bytes.withUnsafeBytes { raw -> UInt32 in
-            UInt32(raw[0]) << 24 | UInt32(raw[1]) << 16 | UInt32(raw[2]) << 8 | UInt32(raw[3])
-        }
+        // Big-endian sobre os 4 bytes derivados, sem ponteiro: o subscript de
+        // Data é ambíguo entre duas sobrecargas e o compilador recusa.
+        let value = derived.withUnsafeBytes { Data($0) }
+            .reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
         return String(format: "%06u", value % 1_000_000)
     }
 

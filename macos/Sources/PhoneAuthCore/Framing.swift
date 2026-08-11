@@ -52,9 +52,11 @@ public enum Framing {
         public mutating func next() throws -> Data? {
             guard buffer.count >= 4 else { return nil }
 
-            let length = buffer.withUnsafeBytes { raw -> Int in
-                Int(raw[0]) << 24 | Int(raw[1]) << 16 | Int(raw[2]) << 8 | Int(raw[3])
-            }
+            // `reduce` e não `withUnsafeBytes`: o subscript de Data é ambíguo
+            // entre UnsafePointer e UnsafeRawBufferPointer, e o compilador
+            // recusa. Aqui não há ponteiro nenhum, o que também apaga a classe
+            // inteira de erro que ponteiro traz.
+            let length = buffer.prefix(4).reduce(0) { ($0 << 8) | Int($1) }
 
             guard length > 0 else { throw Error.emptyFrame }
             guard length <= maxFrameSize else { throw Error.frameTooLarge(length) }

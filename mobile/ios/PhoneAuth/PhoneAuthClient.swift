@@ -601,9 +601,9 @@ struct FrameDecoder {
 
     mutating func next() -> Data? {
         guard buffer.count >= 4 else { return nil }
-        let length = buffer.withUnsafeBytes { raw -> Int in
-            Int(raw[0]) << 24 | Int(raw[1]) << 16 | Int(raw[2]) << 8 | Int(raw[3])
-        }
+        // Ver o gêmeo em PhoneAuthCore/Framing.swift: o subscript de Data é
+        // ambíguo entre UnsafePointer e UnsafeRawBufferPointer.
+        let length = buffer.prefix(4).reduce(0) { ($0 << 8) | Int($1) }
         guard length > 0, length <= 65_536 else {
             buffer.removeAll()   // peer com defeito ou hostil; descarta tudo
             return nil
