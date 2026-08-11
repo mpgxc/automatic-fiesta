@@ -296,9 +296,12 @@ final class PhoneListener {
             session.start()
         }
 
+        // Içado para fora do closure de propósito: assim o handler não captura
+        // `self`, e não há ciclo entre o listener e quem o segura.
+        let announcedPort = config.port
         listener.stateUpdateHandler = { state in
             switch state {
-            case .ready:          Log.info("escutando TLS na porta \(config.port), anunciado como _phoneauth._tcp")
+            case .ready:          Log.info("escutando TLS na porta \(announcedPort), anunciado como _phoneauth._tcp")
             case .failed(let e):  Log.error("listener falhou: \(e)")
             default:              break
             }

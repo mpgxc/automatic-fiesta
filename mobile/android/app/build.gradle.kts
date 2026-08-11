@@ -41,6 +41,11 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
     implementation("androidx.activity:activity-compose:1.9.2")
 
+    // O tema do AndroidManifest é Theme.Material3.*, que é um recurso XML do
+    // Material Components — o BOM do Compose entrega o código de material3, não
+    // os temas. Sem esta linha o AAPT falha em processDebugResources.
+    implementation("com.google.android.material:material:1.12.0")
+
     implementation(platform("androidx.compose:compose-bom:2024.09.03"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
