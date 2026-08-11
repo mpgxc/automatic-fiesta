@@ -142,25 +142,19 @@ jobs:
           {
             echo "## O GitHub Pages não está habilitado neste repositório"
             echo
-            echo 'O site foi montado e validado — o que faltou foi só a publicação.'
-            echo 'O `GITHUB_TOKEN` não consegue habilitar o Pages sozinho aqui.'
+            echo 'O site foi montado e validado — as duas guardas passaram e o'
+            echo '`_site` está pronto. O que faltou foi só a publicação: o'
+            echo '`GITHUB_TOKEN` não conseguiu habilitar o Pages sozinho.'
             echo
-            echo '**Repositório privado.** O Pages em repositório privado exige'
-            echo 'plano Pro, Team ou Enterprise. No plano Free ele só funciona em'
-            echo 'repositório público.'
+            echo 'Criar o site do Pages pela API exige permissão de administração'
+            echo 'do repositório, que o token do workflow não tem. É uma vez só:'
             echo
-            echo 'Caminhos, um ou outro:'
+            echo '**Settings → Pages → Source: "GitHub Actions"**'
             echo
-            echo '1. **Settings → Pages → Source: GitHub Actions.** Se a opção'
-            echo '   estiver disponível, basta selecioná-la e re-executar este'
-            echo '   workflow. Nada mais precisa mudar.'
-            echo
-            echo '2. **Tornar o repositório público** (Settings → General → Danger'
-            echo '   Zone → Change visibility). Aí o Pages passa a funcionar no'
-            echo '   plano Free. Vale lembrar que isso expõe todo o código, não'
-            echo '   só a landing page.'
+            echo 'Feito isso, re-execute este workflow. A partir daí todo push em'
+            echo '`docs/landing/**` publica sozinho.'
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::error::GitHub Pages não habilitado. Veja o resumo do run: Settings → Pages → Source: GitHub Actions, ou torne o repositório público."
+          echo "::error::GitHub Pages não habilitado. Vá em Settings → Pages → Source: \"GitHub Actions\" e re-execute este workflow."
           exit 1
 
       - uses: actions/upload-pages-artifact@v3
