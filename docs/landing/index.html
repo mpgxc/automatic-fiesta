@@ -5,6 +5,21 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PhoneAuth — desbloqueie o Mac com a digital do celular</title>
 <meta name="description" content="Seu Mac fechado na dock não tem Touch ID. PhoneAuth usa a digital do seu iPhone ou Android para aprovar os pedidos de senha do macOS.">
+
+<!-- Cartão de compartilhamento. Sem `og:image`: a única imagem da página é SVG
+     inline, e og:image exige um bitmap acessível por URL própria — inventar um
+     link para arquivo que não existe renderiza pior do que não declarar nada.
+     Por isso `twitter:card` é `summary`, não `summary_large_image`. -->
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://mpgxc.github.io/automatic-fiesta/">
+<meta property="og:title" content="PhoneAuth — desbloqueie o Mac com a digital do celular">
+<meta property="og:description" content="Mac na dock, tampa fechada, Touch ID inalcançável. O pedido de senha vai para o celular e a digital resolve — na rede local, sem nuvem.">
+<meta property="og:locale" content="pt_BR">
+<meta name="twitter:card" content="summary">
+<!-- A barra do navegador no iOS e Android acompanha o fundo da página; sem
+     isto ela fica branca e corta o topo do layout escuro. -->
+<meta name="theme-color" content="#07080c">
+<link rel="canonical" href="https://mpgxc.github.io/automatic-fiesta/">
 <style>
 :root{
   --bg:#07080c; --bg2:#0c0e14; --panel:#11141c; --line:rgba(255,255,255,.08);

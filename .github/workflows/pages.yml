@@ -46,10 +46,28 @@ jobs:
           html = pathlib.Path("docs/landing/index.html").read_text(encoding="utf-8")
           achados = []
 
+          # O que importa é subrecurso — o que o navegador busca sozinho ao abrir
+          # a página. Um `data:` é inline, então passa. Metadado que não carrega
+          # nada (canonical, alternate) também: são declarações sobre a página,
+          # e ali a URL absoluta é justamente o uso correto.
+          METADADO = {"canonical", "alternate"}
+
+          def inline(url):
+              return url.strip().lower().startswith("data:")
+
           for m in re.finditer(r'\bsrc\s*=\s*"([^"]*)"', html):
-              achados.append(("src=", m.group(1)))
+              if not inline(m.group(1)):
+                  achados.append(("src=", m.group(1)))
+
           for m in re.finditer(r'<link\b[^>]*>', html, re.I):
-              achados.append(("<link>", m.group(0)[:90]))
+              tag = m.group(0)
+              rel = re.search(r'\brel\s*=\s*"([^"]*)"', tag, re.I)
+              if rel and set(rel.group(1).lower().split()) & METADADO:
+                  continue
+              href = re.search(r'\bhref\s*=\s*"([^"]*)"', tag, re.I)
+              if not (href and inline(href.group(1))):
+                  achados.append(("<link>", tag[:90]))
+
           for m in re.finditer(r'@import[^;]*;', html, re.I):
               achados.append(("@import", m.group(0)[:90]))
           for m in re.finditer(r'url\(\s*[\'"]?(?:https?:)?//[^)]*\)', html, re.I):
@@ -57,7 +75,7 @@ jobs:
 
           if achados:
               for tipo, trecho in achados:
-                  print(f"::error file=docs/landing/index.html::recurso externo ({tipo}): {trecho}")
+                  print(f"::error file=docs/landing/index.html::subrecurso externo ({tipo}): {trecho}")
               sys.exit(1)
           print("nenhum subrecurso externo — a página continua autocontida")
           PY
