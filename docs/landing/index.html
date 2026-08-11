@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PhoneAuth — desbloqueie o Mac com a digital do celular</title>
+<meta name="description" content="Seu Mac fechado na dock não tem Touch ID. PhoneAuth usa a digital do seu iPhone ou Android para aprovar os pedidos de senha do macOS.">
+<style>
+:root{
+  --bg:#07080c; --bg2:#0c0e14; --panel:#11141c; --line:rgba(255,255,255,.08);
+  --ink:#f2f4f8; --dim:#9aa3b2; --faint:#5f6878;
+  --accent:#30d158;      /* verde de aprovado — a cor do sistema no macOS */
+  --blue:#0a84ff; --amber:#ff9f0a; --red:#ff453a;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"SF Pro Display","Inter",system-ui,sans-serif;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{
+  font-family:var(--sans); background:var(--bg); color:var(--ink);
+  -webkit-font-smoothing:antialiased; overflow-x:hidden; line-height:1.6;
+}
+.wrap{max-width:1120px;margin:0 auto;padding:0 24px}
+section{position:relative}
+
+/* ── Reveal on scroll ─────────────────────────────────────────── */
+.rv{opacity:0;transform:translateY(28px);transition:opacity .8s cubic-bezier(.16,1,.3,1),transform .8s cubic-bezier(.16,1,.3,1)}
+.rv.in{opacity:1;transform:none}
+.rv.d1{transition-delay:.08s}.rv.d2{transition-delay:.16s}.rv.d3{transition-delay:.24s}
+@media (prefers-reduced-motion:reduce){.rv{opacity:1;transform:none;transition:none}}
+
+/* ── Nav ──────────────────────────────────────────────────────── */
+/* .84 e não .72: onde `backdrop-filter` não é aplicado — headless, GPU
+   desligada, navegador antigo — o texto da seção passa legível por trás da
+   barra. A opacidade sozinha já tem de dar conta. */
+nav{position:fixed;top:0;left:0;right:0;z-index:100;backdrop-filter:blur(20px);
+  background:rgba(7,8,12,.84);border-bottom:1px solid transparent;transition:border-color .3s}
+/* Os links do menu pulam para âncoras; sem isto o título para embaixo da barra. */
+section[id],header[id]{scroll-margin-top:76px}
+nav.stuck{border-bottom-color:var(--line)}
+.nav-in{max-width:1120px;margin:0 auto;padding:14px 24px;display:flex;align-items:center;gap:12px}
+.logo{display:flex;align-items:center;gap:9px;font-weight:600;letter-spacing:-.01em}
+.logo svg{width:22px;height:22px}
+.nav-sp{flex:1}
+.nav-link{color:var(--dim);text-decoration:none;font-size:.9rem;transition:color .2s}
+.nav-link:hover{color:var(--ink)}
+@media(max-width:720px){.nav-link.hide-sm{display:none}}
+/* A pílula quebrando em duas linhas deixa o ponto verde centralizado no meio
+   do bloco, longe da primeira linha. Some com a cauda antes disso acontecer. */
+@media(max-width:560px){.hide-xs{display:none}}
+
+/* ── Hero ─────────────────────────────────────────────────────── */
+.hero{padding:150px 0 90px;text-align:center;position:relative;overflow:hidden}
+.hero::before{content:"";position:absolute;top:-30%;left:50%;transform:translateX(-50%);
+  width:1000px;height:700px;background:radial-gradient(ellipse at center,rgba(48,209,88,.10),transparent 62%);
+  pointer-events:none}
+.pill{display:inline-flex;align-items:center;gap:8px;padding:6px 14px;border:1px solid var(--line);
+  border-radius:100px;font-size:.78rem;color:var(--dim);background:rgba(255,255,255,.03);margin-bottom:26px}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--accent);box-shadow:0 0 10px var(--accent);
+  animation:pulse 2s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+h1{font-size:clamp(2.05rem,8.5vw,4.4rem);line-height:1.05;letter-spacing:-.035em;font-weight:700}
+/* A quebra da segunda linha é explícita porque `text-wrap:balance` não age em
+   bloco que já tem <br> forçado — o Chrome computa `balance` e mesmo assim
+   deixa "longe." órfã. Abaixo de 860px o <br> sai e a quebra volta a ser
+   natural, que é o certo quando cada linha já é curta. */
+@media(max-width:860px){h1 br.lg{display:none}}
+h1 .grad{background:linear-gradient(100deg,var(--accent),#7ce9a0 55%,var(--blue));
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.sub{font-size:clamp(1.02rem,2.1vw,1.22rem);color:var(--dim);max-width:600px;margin:22px auto 0}
+.cta{display:flex;gap:12px;justify-content:center;margin-top:36px;flex-wrap:wrap}
+.btn{padding:12px 24px;border-radius:100px;font-size:.94rem;font-weight:550;text-decoration:none;
+  transition:transform .2s cubic-bezier(.16,1,.3,1),background .2s;display:inline-block}
+.btn:active{transform:scale(.97)}
+.btn-p{background:var(--ink);color:#07080c}
+.btn-p:hover{background:#fff}
+.btn-s{border:1px solid var(--line);color:var(--ink)}
+.btn-s:hover{background:rgba(255,255,255,.06)}
+
+/* ── Hero scene: Mac fechado + celular ────────────────────────── */
+.scene{margin:56px auto 0;max-width:760px}
+.scene svg{width:100%;height:auto;display:block}
+
+/* ── Section headers ──────────────────────────────────────────── */
+.eyebrow{font-family:var(--mono);font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--faint);margin-bottom:14px}
+h2{font-size:clamp(1.75rem,4.2vw,2.7rem);line-height:1.14;letter-spacing:-.028em;font-weight:650}
+.lead{color:var(--dim);font-size:1.05rem;max-width:640px;margin-top:16px}
+
+/* ── Problema ─────────────────────────────────────────────────── */
+.problem{padding:110px 0;background:
+  linear-gradient(180deg,transparent,rgba(255,69,58,.045) 42%,transparent)}
+.pgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:48px}
+@media(max-width:860px){.pgrid{grid-template-columns:1fr}}
+.pcard{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:26px;
+  transition:border-color .3s,transform .3s}
+.pcard:hover{border-color:rgba(255,69,58,.32);transform:translateY(-3px)}
+.pcard .ic{width:38px;height:38px;border-radius:10px;background:rgba(255,69,58,.11);
+  display:grid;place-items:center;margin-bottom:16px}
+.pcard h3{font-size:1.02rem;font-weight:600;margin-bottom:8px;letter-spacing:-.01em}
+.pcard p{color:var(--dim);font-size:.92rem}
+
+/* ── Fluxo com scroll ─────────────────────────────────────────── */
+.flow{padding:90px 0 0}
+.flow-rail{position:relative;display:grid;grid-template-columns:1fr 380px;gap:56px;align-items:start}
+@media(max-width:980px){.flow-rail{grid-template-columns:1fr;gap:0}}
+.flow-sticky{position:sticky;top:88px;height:min(74vh,560px);display:grid;place-items:center}
+@media(max-width:980px){.flow-sticky{height:auto;padding:22px 0 8px;top:64px;
+  background:linear-gradient(180deg,var(--bg) 78%,transparent);z-index:5}}
+.flow-sticky svg{width:100%;height:auto;max-height:100%}
+.steps{padding:8vh 0 24vh}
+@media(max-width:980px){.steps{padding:2vh 0 18vh}}
+.step{min-height:70vh;display:flex;flex-direction:column;justify-content:center;
+  opacity:.24;transition:opacity .45s}
+@media(max-width:980px){.step{min-height:58vh}}
+.step.on{opacity:1}
+.step .n{font-family:var(--mono);font-size:.74rem;color:var(--accent);letter-spacing:.14em;margin-bottom:10px}
+.step h3{font-size:1.4rem;font-weight:620;letter-spacing:-.018em;margin-bottom:10px}
+.step p{color:var(--dim);font-size:.96rem}
+.step code{font-family:var(--mono);font-size:.86em;background:rgba(255,255,255,.07);
+  padding:2px 7px;border-radius:5px;color:#c9d3e2}
+
+/* ── Segurança ────────────────────────────────────────────────── */
+.sec{padding:120px 0}
+.split{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:44px}
+@media(max-width:860px){.split{grid-template-columns:1fr}}
+.bad,.good{border-radius:16px;padding:28px;border:1px solid var(--line);background:var(--panel)}
+.bad{border-color:rgba(255,69,58,.24)}
+.good{border-color:rgba(48,209,88,.26)}
+.tag{font-family:var(--mono);font-size:.7rem;letter-spacing:.13em;text-transform:uppercase;margin-bottom:14px}
+.bad .tag{color:var(--red)}.good .tag{color:var(--accent)}
+.bad p,.good p{color:var(--dim);font-size:.94rem}
+.bad strong,.good strong{color:var(--ink);font-weight:600}
+
+/* ── Plataformas ──────────────────────────────────────────────── */
+.plats{display:grid;grid-template-columns:repeat(2,1fr);gap:18px;margin-top:40px}
+@media(max-width:680px){.plats{grid-template-columns:1fr}}
+.plat{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:26px;
+  display:flex;gap:16px;align-items:flex-start}
+.plat svg{flex-shrink:0;margin-top:2px}
+.plat h3{font-size:1rem;font-weight:600;margin-bottom:5px}
+.plat p{color:var(--dim);font-size:.9rem}
+.plat .chip{display:inline-block;font-family:var(--mono);font-size:.68rem;color:var(--faint);
+  border:1px solid var(--line);border-radius:5px;padding:2px 7px;margin-top:10px}
+
+/* ── Honestidade ──────────────────────────────────────────────── */
+.honest{background:var(--bg2);border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:96px 0}
+.hlist{margin-top:36px;display:grid;gap:2px;border-radius:14px;overflow:hidden;border:1px solid var(--line)}
+.hrow{display:grid;grid-template-columns:26px 1fr;gap:14px;padding:18px 22px;background:var(--panel);align-items:start}
+.hrow svg{margin-top:3px}
+.hrow b{display:block;font-weight:600;font-size:.95rem;margin-bottom:3px}
+.hrow span{color:var(--dim);font-size:.89rem}
+
+/* ── Rodapé ───────────────────────────────────────────────────── */
+footer{padding:70px 0 50px;text-align:center;color:var(--faint);font-size:.86rem}
+footer a{color:var(--dim);text-decoration:none;border-bottom:1px solid var(--line)}
+footer a:hover{color:var(--ink)}
+
+/* ── Elementos animados do SVG ────────────────────────────────── */
+.blink{animation:blink 1.1s step-end infinite}
+@keyframes blink{50%{opacity:0}}
+@media (prefers-reduced-motion:reduce){.blink{animation:none}}
+.pkt{opacity:0}
+/* Os `<text>` sem `font-family` herdam a do body de propósito. `var()` dentro de
+   atributo de apresentação não é suportado de forma confiável, e uma regra CSS
+   aqui venceria os `font-family="ui-monospace"` do terminal — atributo de
+   apresentação tem especificidade zero. Herança é a única via que não quebra
+   nem um lado nem o outro. */
+</style>
+</head>
+<body>
+
+<nav id="nav"><div class="nav-in">
+  <div class="logo">
+    <svg viewBox="0 0 24 24" fill="none"><rect x="5" y="2" width="14" height="20" rx="3.4" stroke="#30d158" stroke-width="1.6"/><circle cx="12" cy="16.4" r="2.1" stroke="#30d158" stroke-width="1.5"/><path d="M9.6 12.2c0-1.6 1.1-2.7 2.4-2.7s2.4 1.1 2.4 2.7" stroke="#30d158" stroke-width="1.5" stroke-linecap="round"/></svg>
+    PhoneAuth
+  </div>
+  <div class="nav-sp"></div>
+  <a class="nav-link hide-sm" href="#problema">O problema</a>
+  <a class="nav-link hide-sm" href="#fluxo">Como funciona</a>
+  <a class="nav-link" href="#limites">Limites</a>
+</div></nav>
+
+<!-- ══ HERO ══════════════════════════════════════════════════ -->
+<header class="hero"><div class="wrap">
+  <div class="pill rv"><span class="dot"></span> Rede local · sem nuvem<span class="hide-xs"> · sem servidor para manter</span></div>
+  <h1 class="rv d1">Seu Mac está fechado.<br><span class="grad">Sua digital não precisa<br class="lg">estar longe.</span></h1>
+  <p class="sub rv d2">
+    Mac na dock, tampa fechada, monitor externo. O Touch ID está inalcançável e o
+    <code style="font-family:var(--mono);font-size:.92em">sudo</code> pede senha. O PhoneAuth manda o pedido para o seu
+    celular — você encosta o dedo, o Mac libera.
+  </p>
+  <div class="cta rv d3">
+    <a class="btn btn-p" href="#fluxo">Ver o fluxo completo</a>
+    <a class="btn btn-s" href="#limites">O que ele não faz</a>
+  </div>
+
+  <div class="scene rv d3">
+    <svg viewBox="0 0 760 300" fill="none" aria-label="Mac fechado na dock e celular aprovando com biometria">
+      <!-- monitor externo -->
+      <rect x="34" y="24" width="300" height="182" rx="9" fill="#11141c" stroke="rgba(255,255,255,.13)"/>
+      <rect x="46" y="36" width="276" height="150" rx="4" fill="#07080c"/>
+      <text x="60" y="66" font-family="ui-monospace,monospace" font-size="12" fill="#5f6878">$ sudo softwareupdate -i -a</text>
+      <text x="60" y="90" font-family="ui-monospace,monospace" font-size="12" fill="#9aa3b2">Password:</text>
+      <rect id="caret" x="128" y="80" width="7" height="13" fill="#30d158" class="blink"/>
+      <text x="60" y="132" font-family="ui-monospace,monospace" font-size="11" fill="#ff9f0a">⌁ aguardando aprovação no</text>
+      <text x="60" y="150" font-family="ui-monospace,monospace" font-size="11" fill="#ff9f0a">  iPhone de mpgxc…</text>
+      <rect x="150" y="206" width="68" height="30" rx="3" fill="#0c0e14" stroke="rgba(255,255,255,.09)"/>
+      <rect x="112" y="236" width="144" height="7" rx="3.5" fill="#11141c" stroke="rgba(255,255,255,.09)"/>
+
+      <!-- MacBook fechado, de lado -->
+      <rect x="72" y="256" width="224" height="13" rx="6" fill="#1a1e28" stroke="rgba(255,255,255,.12)"/>
+      <rect x="72" y="262" width="224" height="4" fill="#0c0e14" opacity=".8"/>
+      <text x="184" y="288" text-anchor="middle" font-size="10.5" fill="#5f6878">tampa fechada · Touch ID inalcançável</text>
+
+      <!-- onda LAN -->
+      <g id="heroWave">
+        <path d="M360 148 Q 430 108 500 148" stroke="rgba(48,209,88,.34)" stroke-width="1.6" stroke-dasharray="5 6"/>
+        <circle id="heroPkt" cx="360" cy="148" r="4.5" fill="#30d158"/>
+      </g>
+      <text x="430" y="96" text-anchor="middle" font-size="9.5" fill="#5f6878" font-family="ui-monospace,monospace">TLS 1.3 · LAN</text>
+
+      <!-- celular -->
+      <rect x="540" y="34" width="168" height="238" rx="26" fill="#11141c" stroke="rgba(255,255,255,.14)" stroke-width="1.4"/>
+      <rect x="551" y="46" width="146" height="214" rx="18" fill="#07080c"/>
+      <rect x="600" y="52" width="48" height="7" rx="3.5" fill="#1a1e28"/>
+      <text x="624" y="96" text-anchor="middle" font-size="10.5" fill="#5f6878">MacBook Pro pede</text>
+      <rect x="566" y="108" width="116" height="40" rx="8" fill="rgba(255,255,255,.045)" stroke="rgba(255,255,255,.08)"/>
+      <text x="624" y="126" text-anchor="middle" font-size="9" fill="#c9d3e2" font-family="ui-monospace,monospace">sudo softwareupdate</text>
+      <text x="624" y="139" text-anchor="middle" font-size="9" fill="#c9d3e2" font-family="ui-monospace,monospace">-i -a</text>
+      <!-- digital -->
+      <g id="heroPrint" transform="translate(624,196)">
+        <circle r="30" fill="rgba(48,209,88,.09)" stroke="rgba(48,209,88,.3)"/>
+        <g stroke="#30d158" stroke-width="1.7" fill="none" stroke-linecap="round">
+          <path d="M-13 5c0-8 5.8-14 13-14s13 6 13 14"/>
+          <path d="M-7.5 8c0-5 3.4-8.6 7.5-8.6S7.5 3 7.5 8"/>
+          <path d="M-2 10c0-2 .9-3.4 2-3.4S2 8 2 10"/>
+          <path d="M-13 12v2.5M13 12v2.5"/>
+        </g>
+      </g>
+      <text x="624" y="248" text-anchor="middle" font-size="10" fill="#30d158">Encoste o dedo</text>
+    </svg>
+  </div>
+</div></header>
+
+<!-- ══ PROBLEMA ══════════════════════════════════════════════ -->
+<section class="problem" id="problema"><div class="wrap">
+  <p class="eyebrow rv">O incômodo diário</p>
+  <h2 class="rv d1">O Touch ID do Mac assume que você<br>está sempre olhando para ele.</h2>
+  <p class="lead rv d2">
+    Só que boa parte do tempo você não está. E aí sobra digitar a senha — a mesma senha
+    longa, várias vezes por dia, muitas vezes em frente a outras pessoas.
+  </p>
+  <div class="pgrid">
+    <div class="pcard rv">
+      <div class="ic"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M3 17h18M5 17V8a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v9" stroke="#ff453a" stroke-width="1.7" stroke-linecap="round"/><path d="M2 20.5h20" stroke="#ff453a" stroke-width="1.7" stroke-linecap="round"/></svg></div>
+      <h3>Tampa fechada na dock</h3>
+      <p>Monitor externo, teclado externo. O sensor está debaixo da tampa que você acabou de fechar. Não existe Touch ID nessa configuração.</p>
+    </div>
+    <div class="pcard rv d1">
+      <div class="ic"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="18" height="13" rx="2" stroke="#ff453a" stroke-width="1.7"/><path d="M7 21h10" stroke="#ff453a" stroke-width="1.7" stroke-linecap="round"/></svg></div>
+      <h3>Mac mini e Mac Studio</h3>
+      <p>Se o seu teclado não é um Magic Keyboard com Touch ID, o Mac simplesmente não tem leitor. Senha digitada, sempre.</p>
+    </div>
+    <div class="pcard rv d2">
+      <div class="ic"><svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="#ff453a" stroke-width="1.7"/><path d="M12 7.5v5l3 2" stroke="#ff453a" stroke-width="1.7" stroke-linecap="round"/></svg></div>
+      <h3>Dedo molhado, dedo sujo</h3>
+      <p>Cozinhando, na academia, com luva. O sensor falha três vezes e o macOS volta para o campo de senha de qualquer jeito.</p>
+    </div>
+  </div>
+</div></section>
+
+<!-- ══ FLUXO ═════════════════════════════════════════════════ -->
+<section class="flow" id="fluxo"><div class="wrap">
+  <p class="eyebrow rv">O caminho completo</p>
+  <h2 class="rv d1">O que acontece entre o <code style="font-family:var(--mono);font-size:.78em">sudo</code><br>e o dedo no celular.</h2>
+  <p class="lead rv d2">Role para acompanhar cada mensagem trafegando entre o Mac e o telefone.</p>
+
+  <div class="flow-rail">
+    <div class="flow-sticky">
+      <svg id="stage" viewBox="0 0 560 400" fill="none" aria-label="Animação do tráfego entre o Mac e o celular">
+        <!-- Mac -->
+        <rect x="16" y="70" width="212" height="150" rx="10" fill="#11141c" stroke="rgba(255,255,255,.12)"/>
+        <rect x="27" y="81" width="190" height="122" rx="4" fill="#07080c"/>
+        <text x="38" y="104" font-family="ui-monospace,monospace" font-size="10" fill="#5f6878">MacBook Pro</text>
+        <g id="term"></g>
+        <rect x="86" y="220" width="72" height="9" rx="4" fill="#1a1e28"/>
+        <rect x="52" y="229" width="140" height="6" rx="3" fill="#11141c" stroke="rgba(255,255,255,.08)"/>
+
+        <!-- camadas internas do Mac -->
+        <g id="layers" font-family="ui-monospace,monospace" font-size="8.5">
+          <rect id="lay-pam" x="30" y="252" width="86" height="24" rx="5" fill="rgba(255,255,255,.03)" stroke="rgba(255,255,255,.1)"/>
+          <text x="73" y="267" text-anchor="middle" fill="#5f6878">pam_phoneauth</text>
+          <rect id="lay-dae" x="128" y="252" width="86" height="24" rx="5" fill="rgba(255,255,255,.03)" stroke="rgba(255,255,255,.1)"/>
+          <text x="171" y="267" text-anchor="middle" fill="#5f6878">phoneauthd</text>
+          <path d="M116 264h12" stroke="rgba(255,255,255,.18)" stroke-width="1.2"/>
+          <circle id="bus" cx="116" cy="264" r="2.2" fill="#30d158" opacity="0"/>
+        </g>
+
+        <!-- caminho do pacote -->
+        <path id="wire" d="M228 264 C 300 264 300 150 372 150" stroke="rgba(255,255,255,.1)" stroke-width="1.4" stroke-dasharray="4 6"/>
+        <text x="300" y="212" text-anchor="middle" font-size="8.5" fill="#3d4552" font-family="ui-monospace,monospace">TLS 1.3 · SPKI pinado</text>
+
+        <!-- pacote -->
+        <g id="pkt" class="pkt">
+          <circle r="16" fill="rgba(48,209,88,.14)"/>
+          <circle r="5.5" fill="#30d158"/>
+        </g>
+        <text id="pktLabel" x="0" y="0" text-anchor="middle" font-size="8.5" font-family="ui-monospace,monospace" fill="#30d158" opacity="0"></text>
+
+        <!-- celular -->
+        <rect x="372" y="46" width="150" height="252" rx="24" fill="#11141c" stroke="rgba(255,255,255,.14)" stroke-width="1.3"/>
+        <rect x="382" y="57" width="130" height="230" rx="17" fill="#07080c"/>
+        <rect x="425" y="63" width="44" height="6" rx="3" fill="#1a1e28"/>
+        <g id="phone"></g>
+
+        <!-- enclave -->
+        <g id="enclave" opacity=".28">
+          <rect x="396" y="316" width="102" height="46" rx="9" fill="rgba(48,209,88,.05)" stroke="rgba(48,209,88,.3)" stroke-dasharray="3 3"/>
+          <text x="447" y="334" text-anchor="middle" font-size="8.5" fill="#30d158" font-family="ui-monospace,monospace">Secure Enclave</text>
+          <text x="447" y="348" text-anchor="middle" font-size="8" fill="#5f6878" font-family="ui-monospace,monospace">chave não exportável</text>
+        </g>
+        <path d="M447 298v16" stroke="rgba(48,209,88,.25)" stroke-width="1.2" stroke-dasharray="3 3"/>
+      </svg>
+    </div>
+
+    <div class="steps" id="steps">
+      <div class="step" data-i="0">
+        <div class="n">PASSO 01</div>
+        <h3>Você digita <code>sudo</code></h3>
+        <p>O macOS entra na pilha PAM. Em vez de mostrar o campo de senha, o módulo <code>pam_phoneauth</code> conversa com o daemon local por um socket Unix restrito ao root.</p>
+      </div>
+      <div class="step" data-i="1">
+        <div class="n">PASSO 02</div>
+        <h3>O daemon monta o pedido</h3>
+        <p>Ele descobre <em>qual</em> comando pediu privilégio e embrulha isso num desafio com 32 bytes aleatórios, válido por 60 segundos e de uso único.</p>
+      </div>
+      <div class="step" data-i="2">
+        <div class="n">PASSO 03</div>
+        <h3>O desafio atravessa a rede local</h3>
+        <p>TLS 1.3 com o certificado fixado no pareamento. Sem CA, sem nuvem, sem relay: o pacote não sai da sua rede.</p>
+      </div>
+      <div class="step" data-i="3">
+        <div class="n">PASSO 04</div>
+        <h3>O celular mostra o que está sendo pedido</h3>
+        <p>Não é um "aprovar?" genérico. Aparece o comando exato. Se você não reconhece o que está na tela, é porque não foi você quem pediu.</p>
+      </div>
+      <div class="step" data-i="4">
+        <div class="n">PASSO 05</div>
+        <h3>Você encosta o dedo</h3>
+        <p>O Secure Enclave libera uma chave que <strong>não pode sair do hardware</strong> e assina o desafio. Sem o dedo, a assinatura não existe — não é o app que decide.</p>
+      </div>
+      <div class="step" data-i="5">
+        <div class="n">PASSO 06</div>
+        <h3>O Mac verifica e libera</h3>
+        <p>O daemon confere a assinatura contra a chave pública do pareamento, consome o desafio para que ninguém o reaproveite, e devolve <code>PAM_SUCCESS</code>. O <code>sudo</code> segue.</p>
+      </div>
+    </div>
+  </div>
+</div></section>
+
+<!-- ══ SEGURANÇA ═════════════════════════════════════════════ -->
+<section class="sec"><div class="wrap">
+  <p class="eyebrow rv">Por que isto não é só um botão bonito</p>
+  <h2 class="rv d1">A diferença entre <em>dizer</em> que você<br>encostou o dedo e <em>provar</em>.</h2>
+  <div class="split">
+    <div class="bad rv d1">
+      <div class="tag">✕ O jeito fácil e errado</div>
+      <p>O app pergunta a digital, o celular manda <strong>“ok: true”</strong> pela rede, o Mac confia.</p>
+      <p style="margin-top:12px">Qualquer um que consiga forjar ou reproduzir aquele pacote entra. Um celular com root desliga a checagem. A biometria vira teatro.</p>
+    </div>
+    <div class="good rv d2">
+      <div class="tag">✓ O que o PhoneAuth faz</div>
+      <p>A chave privada nasce <strong>dentro</strong> do Secure Enclave ou do StrongBox, marcada como utilizável só mediante biometria imediata.</p>
+      <p style="margin-top:12px">Ela nunca sai do hardware. A assinatura é matematicamente impossível sem o seu dedo — a biometria vira <strong>precondição de hardware</strong>, não uma afirmação do app.</p>
+    </div>
+  </div>
+  <div class="hlist rv d2" style="margin-top:20px">
+    <div class="hrow"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M4.5 12.5l5 5 10-11" stroke="#30d158" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg><div><b>Cadastrou uma digital nova no celular? A chave é destruída.</b><span>O próprio sistema operacional invalida a chave quando o conjunto de biometrias muda. Fecha o ataque de pegar o aparelho desbloqueado e cadastrar o próprio dedo.</span></div></div>
+    <div class="hrow"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M4.5 12.5l5 5 10-11" stroke="#30d158" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg><div><b>Aprovação capturada não vale duas vezes.</b><span>Cada desafio é aleatório, de uso único e expira em 60 segundos. E a assinatura cobre o certificado daquela conexão, então nem em outro canal ela é reaproveitável.</span></div></div>
+    <div class="hrow"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M4.5 12.5l5 5 10-11" stroke="#30d158" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg><div><b>O Mac não guarda segredo nenhum.</b><span>Só chaves públicas. Se o arquivo vazar, ninguém consegue forjar aprovação — as chaves privadas estão no hardware do telefone.</span></div></div>
+  </div>
+</div></section>
+
+<!-- ══ PLATAFORMAS ═══════════════════════════════════════════ -->
+<section class="sec" style="padding-top:0"><div class="wrap">
+  <p class="eyebrow rv">Um Mac, o celular que você já tem</p>
+  <h2 class="rv d1">iPhone ou Android. Tanto faz.</h2>
+  <p class="lead rv d2">O servidor é sempre o macOS. O aprovador é o telefone que estiver no seu bolso.</p>
+  <div class="plats">
+    <div class="plat rv d1">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="#f2f4f8"><path d="M16.4 12.7c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.5-.15-2.8.85-3.5.85s-1.85-.83-3-.81c-1.6.02-3 .93-3.8 2.35-1.6 2.8-.4 6.95 1.15 9.22.77 1.11 1.68 2.36 2.87 2.31 1.15-.05 1.59-.74 2.98-.74s1.78.74 3 .72c1.24-.02 2.02-1.13 2.78-2.25.87-1.29 1.23-2.54 1.25-2.6-.03-.01-2.4-.92-2.42-3.65M14.1 5.6c.63-.77 1.06-1.83.94-2.9-.91.04-2.01.61-2.66 1.37-.58.68-1.09 1.76-.95 2.8 1.01.08 2.05-.52 2.67-1.27"/></svg>
+      <div><h3>iOS</h3><p>Secure Enclave, Face ID ou Touch ID. A chave de aprovação exige uma apresentação nova a cada assinatura.</p><span class="chip">SwiftUI · iOS 17+</span></div>
+    </div>
+    <div class="plat rv d2">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="#30d158"><path d="M17.6 9.5l1.9-3.3a.4.4 0 0 0-.15-.54.4.4 0 0 0-.54.15l-1.93 3.34A11.6 11.6 0 0 0 12 8.1c-1.72 0-3.35.36-4.88 1.05L5.19 5.81a.4.4 0 0 0-.54-.15.4.4 0 0 0-.15.54L6.4 9.5C3.2 11.24 1.03 14.5.6 18.4h22.8c-.43-3.9-2.6-7.16-5.8-8.9M6.7 15.1a.98.98 0 1 1 0-1.96.98.98 0 0 1 0 1.96m10.6 0a.98.98 0 1 1 0-1.96.98.98 0 0 1 0 1.96"/></svg>
+      <div><h3>Android</h3><p>Keystore com StrongBox quando o aparelho tem. O <em>CryptoObject</em> só destrava a chave depois que o prompt biométrico autenticou.</p><span class="chip">Compose · Android 10+</span></div>
+    </div>
+  </div>
+</div></section>
+
+<!-- ══ LIMITES ═══════════════════════════════════════════════ -->
+<section class="honest" id="limites"><div class="wrap">
+  <p class="eyebrow rv">Sem promessa que não se cumpre</p>
+  <h2 class="rv d1">O que o PhoneAuth <em>não</em> faz.</h2>
+  <p class="lead rv d2">Se alguém te vender isto sem esta lista, desconfie.</p>
+  <div class="hlist">
+    <div class="hrow rv"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="#ff9f0a" stroke-width="2.2" stroke-linecap="round"/></svg><div><b>Não desbloqueia o FileVault no boot.</b><span>Naquele momento ainda não existe rede, nem sessão, nem daemon rodando. Nenhuma solução deste tipo cobre isso — a chave do disco deriva da sua senha.</span></div></div>
+    <div class="hrow rv"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="#ff9f0a" stroke-width="2.2" stroke-linecap="round"/></svg><div><b>Não cobre os diálogos gráficos ainda.</b><span>“Os Ajustes do Sistema querem fazer alterações” passa pelo SecurityAgent, não pelo PAM. Está planejado, com ressalvas honestas sobre o que custa.</span></div></div>
+    <div class="hrow rv"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="#ff9f0a" stroke-width="2.2" stroke-linecap="round"/></svg><div><b>Precisa do celular na mesma rede.</b><span>É escolha, não limitação técnica: sem relay em nuvem não há servidor para manter nem dado seu saindo da rede local.</span></div></div>
+    <div class="hrow rv"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="#30d158" stroke-width="1.8"/><path d="M12 7.6v5.2" stroke="#30d158" stroke-width="2.1" stroke-linecap="round"/><circle cx="12" cy="16.4" r="1.15" fill="#30d158"/></svg><div><b>E nunca te tranca fora da máquina.</b><span>O módulo entra como <code style="font-family:var(--mono);font-size:.88em">sufficient</code>, jamais <code style="font-family:var(--mono);font-size:.88em">required</code>. Daemon fora do ar, celular sem bateria, bug no código — o macOS simplesmente volta a pedir a senha, como sempre.</span></div></div>
+  </div>
+</div></section>
+
+<footer><div class="wrap">
+  <p>PhoneAuth · código aberto sob licença MIT</p>
+  <p style="margin-top:8px">Projeto em desenvolvimento — leia <a href="../status.md">o status real</a> e o <a href="../modelo-de-ameacas.md">modelo de ameaças</a> antes de instalar.</p>
+</div></footer>
+
+<script>
+(function(){
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ── Reveal ────────────────────────────────────────────── */
+  const io = new IntersectionObserver((es)=>{
+    es.forEach(e=>{ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  },{threshold:.15, rootMargin:'0px 0px -8% 0px'});
+  document.querySelectorAll('.rv').forEach(el=>io.observe(el));
+
+  /* ── Nav ───────────────────────────────────────────────── */
+  const nav=document.getElementById('nav');
+  addEventListener('scroll',()=>nav.classList.toggle('stuck',scrollY>12),{passive:true});
+
+  /* ── Pacote do hero, em loop ───────────────────────────── */
+  if(!reduce){
+    const pkt=document.getElementById('heroPkt'), print=document.getElementById('heroPrint');
+    const path=document.querySelector('#heroWave path'), L=path.getTotalLength();
+    let t=0;
+    (function loop(){
+      t=(t+0.006)%1.35;
+      const p=Math.min(t,1), pt=path.getPointAtLength(p*L);
+      pkt.setAttribute('cx',pt.x); pkt.setAttribute('cy',pt.y);
+      pkt.setAttribute('opacity', t>1 ? 0 : (t<.08? t/.08 : 1));
+      // a digital pulsa quando o pacote chega
+      const glow = t>.9 && t<1.25 ? 1 : .55;
+      print.setAttribute('opacity', glow);
+      requestAnimationFrame(loop);
+    })();
+  }
+
+  /* ── Encenação do fluxo, dirigida pelo scroll ──────────── */
+  const steps=[...document.querySelectorAll('.step')];
+  const wire=document.getElementById('wire'), WL=wire.getTotalLength();
+  const pkt=document.getElementById('pkt'), pktLabel=document.getElementById('pktLabel');
+  const term=document.getElementById('term'), phone=document.getElementById('phone');
+  const enclave=document.getElementById('enclave');
+  const layPam=document.getElementById('lay-pam'), layDae=document.getElementById('lay-dae');
+  const bus=document.getElementById('bus');
+  let current=-1;
+
+  /* Trocar o conteúdo de um <g> por markup: via DOMParser em vez de innerHTML.
+     innerHTML num elemento SVG depende das regras de conteúdo estrangeiro do
+     parser HTML; parsear como image/svg+xml põe tudo no namespace certo em
+     qualquer navegador — e um fragmento malformado vira <parsererror> visível
+     em vez de sumir em silêncio. */
+  const SVGNS='http://www.w3.org/2000/svg';
+  function setFrag(host, markup){
+    while(host.firstChild) host.removeChild(host.firstChild);
+    const doc=new DOMParser().parseFromString(`<svg xmlns="${SVGNS}">${markup}</svg>`,'image/svg+xml');
+    for(const node of [...doc.documentElement.childNodes]) host.appendChild(document.importNode(node,true));
+  }
+
+  const T=(x,y,s,fill,txt,anchor)=>
+    `<text x="${x}" y="${y}" font-family="ui-monospace,monospace" font-size="${s}" fill="${fill}"${anchor?` text-anchor="${anchor}"`:''}>${txt}</text>`;
+
+  const SCENES=[
+    { // 0 · sudo
+      term:T(38,126,9.5,'#9aa3b2','$ sudo softwareupdate -i -a')+T(38,144,9.5,'#5f6878','·'),
+      phone:T(447,150,9.5,'#3d4552','aguardando…','middle'),
+      pam:1, dae:0, pkt:null, enc:.25
+    },
+    { // 1 · daemon monta
+      term:T(38,126,9.5,'#9aa3b2','$ sudo softwareupdate -i -a')+T(38,144,9,'#5f6878','auth.begin → phoneauthd'),
+      phone:T(447,150,9.5,'#3d4552','aguardando…','middle'),
+      pam:1, dae:1, pkt:null, enc:.25, bus:1
+    },
+    { // 2 · trafega
+      term:T(38,126,9.5,'#9aa3b2','$ sudo softwareupdate -i -a')+T(38,144,9,'#ff9f0a','⌁ enviado ao iPhone'),
+      phone:T(447,150,9.5,'#3d4552','recebendo…','middle'),
+      pam:1, dae:1, pkt:{a:0,b:1,label:'auth.challenge',color:'#30d158'}, enc:.25
+    },
+    { // 3 · celular mostra
+      term:T(38,126,9.5,'#9aa3b2','$ sudo softwareupdate -i -a')+T(38,144,9,'#ff9f0a','⌁ aguardando aprovação'),
+      phone:T(447,104,9,'#5f6878','MacBook Pro pede','middle')
+        +`<rect x="396" y="116" width="102" height="34" rx="7" fill="rgba(255,255,255,.05)" stroke="rgba(255,255,255,.09)"/>`
+        +T(447,132,8,'#c9d3e2','sudo softwareupdate','middle')+T(447,144,8,'#c9d3e2','-i -a','middle')
+        +T(447,176,8.5,'#5f6878','expira em 54s','middle'),
+      pam:1, dae:1, pkt:null, enc:.35
+    },
+    { // 4 · digital
+      term:T(38,126,9.5,'#9aa3b2','$ sudo softwareupdate -i -a')+T(38,144,9,'#ff9f0a','⌁ aguardando aprovação'),
+      phone:T(447,104,9,'#5f6878','MacBook Pro pede','middle')
+        +`<rect x="396" y="116" width="102" height="34" rx="7" fill="rgba(255,255,255,.05)" stroke="rgba(255,255,255,.09)"/>`
+        +T(447,132,8,'#c9d3e2','sudo softwareupdate','middle')+T(447,144,8,'#c9d3e2','-i -a','middle')
+        +`<g transform="translate(447,206)"><circle r="26" fill="rgba(48,209,88,.12)" stroke="#30d158" stroke-width="1.2"/>
+           <g stroke="#30d158" stroke-width="1.6" fill="none" stroke-linecap="round">
+             <path d="M-11 4c0-6.8 4.9-12 11-12s11 5.2 11 12"/><path d="M-6.4 7c0-4.3 2.9-7.3 6.4-7.3S6.4 2.7 6.4 7"/>
+             <path d="M-1.8 8.6c0-1.7.8-2.9 1.8-2.9S1.8 6.9 1.8 8.6"/></g></g>`
+        +T(447,252,8.5,'#30d158','assinando…','middle'),
+      pam:1, dae:1, pkt:null, enc:1
+    },
+    { // 5 · verifica e libera
+      term:T(38,126,9.5,'#9aa3b2','$ sudo softwareupdate -i -a')
+        +T(38,144,9,'#30d158','✓ assinatura verificada')
+        +T(38,162,9,'#30d158','Software Update Tool')
+        +T(38,180,9,'#5f6878','Finding available software…'),
+      phone:`<g transform="translate(447,164)"><circle r="30" fill="rgba(48,209,88,.14)"/>
+             <path d="M-13 1l9 9 18-19" stroke="#30d158" stroke-width="3.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></g>`
+        +T(447,224,9.5,'#30d158','Aprovado','middle'),
+      pam:1, dae:1, pkt:{a:1,b:0,label:'assinatura P-256',color:'#30d158'}, enc:.35
+    }
+  ];
+
+  function paint(i){
+    if(i===current) return; current=i;
+    const s=SCENES[i]; if(!s) return;
+    setFrag(term,s.term); setFrag(phone,s.phone);
+    enclave.setAttribute('opacity', s.enc);
+    layPam.setAttribute('stroke', s.pam? 'rgba(48,209,88,.5)':'rgba(255,255,255,.1)');
+    layDae.setAttribute('stroke', s.dae? 'rgba(48,209,88,.5)':'rgba(255,255,255,.1)');
+    if(s.pkt){ flyPacket(s.pkt); } else { pkt.style.opacity=0; pktLabel.setAttribute('opacity',0); }
+    // O salto interno PAM → daemon é curto demais para virar cena própria, mas
+    // é tráfego de verdade e o passo 02 é exatamente sobre ele.
+    if(s.bus && !reduce){ bus.setAttribute('opacity',1); flyBus(); }
+    else { bus.setAttribute('opacity',0); cancelAnimationFrame(busAnim); }
+  }
+
+  let busAnim=null;
+  function flyBus(){
+    cancelAnimationFrame(busAnim);
+    const x0=116, x1=128, t0=performance.now();
+    (function frame(now){
+      const k=((now-t0)/900)%1;
+      bus.setAttribute('cx', x0+(x1-x0)*k);
+      bus.setAttribute('opacity', k<.15? k/.15 : (k>.85? (1-k)/.15 : 1));
+      busAnim=requestAnimationFrame(frame);
+    })(t0);
+  }
+
+  let anim=null;
+  function flyPacket({a,b,label,color}){
+    cancelAnimationFrame(anim);
+    pktLabel.textContent=label; pktLabel.setAttribute('fill',color);
+    pkt.querySelector('circle:last-child').setAttribute('fill',color);
+    if(reduce){ // sem movimento: mostra parado no meio
+      const p=wire.getPointAtLength(WL*.5);
+      pkt.setAttribute('transform',`translate(${p.x},${p.y})`); pkt.style.opacity=1;
+      pktLabel.setAttribute('x',p.x); pktLabel.setAttribute('y',p.y-26); pktLabel.setAttribute('opacity',1);
+      return;
+    }
+    const t0=performance.now(), dur=1250;
+    (function frame(now){
+      let k=Math.min((now-t0)/dur,1);
+      const e=k<.5? 2*k*k : 1-Math.pow(-2*k+2,2)/2;      // easeInOutQuad
+      const d=(a + (b-a)*e)*WL, p=wire.getPointAtLength(d);
+      pkt.setAttribute('transform',`translate(${p.x},${p.y})`);
+      pkt.style.opacity = k<.06 ? k/.06 : (k>.94 ? (1-k)/.06 : 1);
+      pktLabel.setAttribute('x',p.x); pktLabel.setAttribute('y',p.y-26);
+      pktLabel.setAttribute('opacity', pkt.style.opacity);
+      if(k<1) anim=requestAnimationFrame(frame);
+    })(t0);
+  }
+
+  /* A faixa de ativação é uma tira de 5% da altura da janela, a ~47% do topo.
+     Um `threshold` sobre a área do passo dependeria da altura dele — texto que
+     quebrasse em mais linhas num celular estreito poderia nunca alcançar a
+     razão exigida e a cena travaria. Com root de altura fixa, o gatilho é o
+     passo cruzar a linha, e a altura dele deixa de importar. */
+  const live=new Set();
+  const so=new IntersectionObserver((es)=>{
+    es.forEach(e=> e.isIntersecting? live.add(e.target) : live.delete(e.target));
+    if(!live.size) return;
+    // Na fronteira entre dois passos ambos cruzam a faixa; vence o mais perto
+    // do centro dela, senão a cena oscilaria conforme a ordem das entradas.
+    const line=innerHeight*.475;
+    let best=null, bestD=Infinity;
+    for(const el of live){
+      const r=el.getBoundingClientRect(), d=Math.abs((r.top+r.bottom)/2-line);
+      if(d<bestD){ bestD=d; best=el; }
+    }
+    steps.forEach(s=>s.classList.toggle('on', s===best));
+    paint(+best.dataset.i);
+  },{threshold:0, rootMargin:'-45% 0px -50% 0px'});
+  steps.forEach(s=>so.observe(s));
+  paint(0);
+})();
+</script>
+</body>
+</html>
