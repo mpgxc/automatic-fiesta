@@ -1,0 +1,197 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # O que roda em qualquer lugar. Barato, rápido, e é onde a maior parte das
+  # invariantes de segurança do projeto é de fato verificada.
+  # ───────────────────────────────────────────────────────────────────────────
+  verify:
+    name: Módulo PAM e contrato
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Testes do módulo PAM sob ASan e UBSan
+        # O módulo roda como root dentro do sudo; um bug de memória ali é
+        # escalação de privilégio local. Os sanitizers não são opcionais aqui.
+        run: |
+          cd macos/pam
+          gcc -Wall -Wextra -O1 -g -fsanitize=address,undefined \
+              -fno-sanitize-recover=all -std=gnu11 -I shim \
+              -o test_pam test_pam_phoneauth.c
+          ./test_pam
+
+      - name: Compilar o módulo com as flags de produção
+        # Compilar limpo sob -Wconversion é requisito, não gentileza: conversão
+        # implícita silenciosa em aritmética de buffer é como off-by-one nasce.
+        run: |
+          cd macos/pam
+          gcc -Wall -Wextra -Wconversion -Wshadow -Wpointer-arith -Wwrite-strings \
+              -Werror -O2 -std=gnu11 -I shim -c pam_phoneauth.c -o /dev/null
+
+      - name: Guarda — só um caminho para PAM_SUCCESS
+        # Grep é grosseiro, mas esta invariante é grosseira o bastante: um único
+        # `result = PAM_SUCCESS`, no caminho da assinatura verificada. Se alguém
+        # acrescentar outro, isto fica vermelho e obriga a explicar por quê.
+        run: |
+          cd macos/pam
+          n=$(grep -c '^\s*result = PAM_SUCCESS;' pam_phoneauth.c || true)
+          echo "atribuições encontradas: $n"
+          test "$n" -eq 1 || {
+            echo "::error file=macos/pam/pam_phoneauth.c::esperado exatamente 1 'result = PAM_SUCCESS', encontrado $n"
+            exit 1
+          }
+
+      - name: Guarda — sudo_local nunca instalado como required
+        run: |
+          if grep -rn --include='*.sh' --include='*.md' -E '^\s*auth\s+required\s+.*pam_phoneauth' . ; then
+            echo "::error::pam_phoneauth documentado como 'required'. Tem que ser 'sufficient', senão uma falha tranca o usuário fora da máquina."
+            exit 1
+          fi
+
+      - name: Vetores de teste são determinísticos
+        run: |
+          python3 docs/generate-test-vectors.py > /tmp/regenerated.json
+          diff -u docs/test-vectors.json /tmp/regenerated.json
+
+      - name: Paridade dos três gêmeos de SignedPayload
+        run: python3 docs/check-payload-parity.py
+
+      - name: Protocolo ponta a ponta
+        run: |
+          pip install --quiet --break-system-packages cryptography
+          python3 docs/protocol-harness.py
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Daemon, CLI e core. Alvo macOS 13, então qualquer runner recente serve.
+  # ───────────────────────────────────────────────────────────────────────────
+  macos-daemon:
+    name: Daemon (Swift)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Versões
+        run: swift --version && xcodebuild -version
+
+      - name: Build
+        run: swift build -c release --package-path macos
+
+      - name: Testes
+        # Aqui é onde os vetores encontram a implementação Swift. Se estes
+        # passarem, a serialização está correta e os gêmeos iOS e Android têm um
+        # alvo confiável.
+        run: swift test --package-path macos
+
+      - name: Módulo PAM no toolchain real do macOS
+        run: |
+          cd macos/pam
+          make
+          file pam_phoneauth.so
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: phoneauthd-${{ github.sha }}
+          path: |
+            macos/.build/release/phoneauthd
+            macos/.build/release/phoneauthctl
+            macos/pam/pam_phoneauth.so
+          if-no-files-found: error
+          retention-days: 14
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # App de barra de menu. Liquid Glass exige o SDK do macOS 26.
+  #
+  # `continue-on-error` porque a disponibilidade do runner e do Xcode 26 varia:
+  # a UI não pode derrubar o pipeline do daemon, que é o que de fato autentica.
+  # O passo de detecção falha explicitamente se o SDK for velho, em vez de
+  # compilar contra um SDK antigo e mentir que passou.
+  # ───────────────────────────────────────────────────────────────────────────
+  macos-ui:
+    name: Barra de menu (Liquid Glass)
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Selecionar o Xcode mais novo disponível
+        run: |
+          ls /Applications | grep -i '^Xcode' || true
+          newest=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          echo "usando $newest"
+          sudo xcode-select -s "$newest"
+          xcodebuild -version
+
+      - name: O SDK tem macOS 26?
+        id: sdk
+        run: |
+          sdk=$(xcrun --sdk macosx --show-sdk-version)
+          echo "sdk=$sdk" >> "$GITHUB_OUTPUT"
+          major=${sdk%%.*}
+          if [ "$major" -lt 26 ]; then
+            echo "::warning::SDK do macOS é $sdk; Liquid Glass precisa de 26. Pulando a compilação da UI."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build da UI
+        if: steps.sdk.outputs.ok == 'true'
+        run: swift build -c release --package-path macos/ui
+
+      - name: Empacotar o .app
+        if: steps.sdk.outputs.ok == 'true'
+        run: |
+          cd macos/ui
+          ./bundle.sh
+          # Sem bundle identifier o UNUserNotificationCenter falha em silêncio,
+          # então confirmar que o Info.plist entrou no lugar certo é barato.
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' .build/PhoneAuth.app/Contents/Info.plist
+          /usr/libexec/PlistBuddy -c 'Print :LSUIElement' .build/PhoneAuth.app/Contents/Info.plist
+
+      - uses: actions/upload-artifact@v4
+        if: steps.sdk.outputs.ok == 'true'
+        with:
+          name: PhoneAuth-app-${{ github.sha }}
+          path: macos/ui/.build/PhoneAuth.app
+          retention-days: 14
+
+  # ───────────────────────────────────────────────────────────────────────────
+  android:
+    name: App Android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Testes unitários
+        # SignedPayloadTest é JVM puro de propósito: os vetores cross-plataforma
+        # rodam sem emulador, no job mais barato possível.
+        run: gradle --project-dir mobile/android testDebugUnitTest --no-daemon
+
+      - name: Build do APK de debug
+        run: gradle --project-dir mobile/android assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: phoneauth-android-${{ github.sha }}
+          path: mobile/android/app/build/outputs/apk/debug/*.apk
+          retention-days: 14
