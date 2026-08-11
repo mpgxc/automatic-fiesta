@@ -1,19 +1,5 @@
 import SwiftUI
 
-@main
-struct PhoneAuthApp: App {
-    @StateObject private var client = PhoneAuthClient()
-    @StateObject private var store = PeerStore()
-
-    var body: some Scene {
-        WindowGroup {
-            ContentView()
-                .environmentObject(client)
-                .environmentObject(store)
-        }
-    }
-}
-
 /// Guarda o Mac pareado. Só material público — o hash de SPKI e o endereço.
 /// As chaves privadas vivem no Secure Enclave e nunca passam por aqui.
 @MainActor

@@ -10,10 +10,23 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Escolha de runner, resumida — cada build na máquina que ele de fato exige:
+#
+#   verify     ubuntu-latest   nada de Apple aqui; é o job barato e o que
+#                              verifica a maior parte das invariantes.
+#   apple      macos-15        daemon (alvo macOS 13) + módulo PAM + app iOS.
+#                              Deliberadamente NÃO é a mais nova: construir num
+#                              toolchain anterior prova que o daemon não passou
+#                              a depender de nada bleeding-edge. Ele precisa
+#                              rodar em Macs que ninguém atualizou.
+#   apple-ui   macos-26        Liquid Glass não existe antes do SDK 26.
+#   android    ubuntu-latest
+#
+# São dois runners macOS, não três: o app iOS divide a máquina com o daemon
+# porque em repositório privado o minuto de macOS custa 10x, e um terceiro
+# runner não compraria informação nova.
+
 jobs:
-  # ───────────────────────────────────────────────────────────────────────────
-  # O que roda em qualquer lugar. Barato, rápido, e é onde a maior parte das
-  # invariantes de segurança do projeto é de fato verificada.
   # ───────────────────────────────────────────────────────────────────────────
   verify:
     name: Módulo PAM e contrato
@@ -32,17 +45,12 @@ jobs:
           ./test_pam
 
       - name: Compilar o módulo com as flags de produção
-        # Compilar limpo sob -Wconversion é requisito, não gentileza: conversão
-        # implícita silenciosa em aritmética de buffer é como off-by-one nasce.
         run: |
           cd macos/pam
           gcc -Wall -Wextra -Wconversion -Wshadow -Wpointer-arith -Wwrite-strings \
               -Werror -O2 -std=gnu11 -I shim -c pam_phoneauth.c -o /dev/null
 
       - name: Guarda — só um caminho para PAM_SUCCESS
-        # Grep é grosseiro, mas esta invariante é grosseira o bastante: um único
-        # `result = PAM_SUCCESS`, no caminho da assinatura verificada. Se alguém
-        # acrescentar outro, isto fica vermelho e obriga a explicar por quê.
         run: |
           cd macos/pam
           n=$(grep -c '^\s*result = PAM_SUCCESS;' pam_phoneauth.c || true)
@@ -73,31 +81,44 @@ jobs:
           python3 docs/protocol-harness.py
 
   # ───────────────────────────────────────────────────────────────────────────
-  # Daemon, CLI e core. Alvo macOS 13, então qualquer runner recente serve.
+  # Daemon, CLI, módulo PAM e app iOS — tudo que NÃO precisa de macOS 26.
   # ───────────────────────────────────────────────────────────────────────────
-  macos-daemon:
-    name: Daemon (Swift)
-    runs-on: macos-latest
+  apple:
+    name: Daemon, PAM e iOS (macOS 15)
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
-      - name: Versões
-        run: swift --version && xcodebuild -version
+      - name: Toolchain
+        run: swift --version && xcodebuild -version && xcrun --sdk macosx --show-sdk-version
 
-      - name: Build
+      - name: Build do daemon
         run: swift build -c release --package-path macos
 
-      - name: Testes
-        # Aqui é onde os vetores encontram a implementação Swift. Se estes
-        # passarem, a serialização está correta e os gêmeos iOS e Android têm um
-        # alvo confiável.
+      - name: Testes do core
+        # Onde os vetores encontram a implementação Swift. Se passarem, a
+        # serialização está correta e os gêmeos iOS e Android têm alvo confiável.
         run: swift test --package-path macos
 
-      - name: Módulo PAM no toolchain real do macOS
+      - name: Módulo PAM com o clang do macOS
+        # O job de Ubuntu já testou o comportamento; aqui o que se verifica é
+        # que ele constrói como bundle no toolchain de destino real.
         run: |
           cd macos/pam
           make
           file pam_phoneauth.so
+
+      - name: Compilar o app iOS
+        # Sem .xcodeproj no repositório — um pbxproj é irrevisável em diff, e
+        # num projeto de autenticação é por ali que um entitlement entra sem
+        # ninguém ver. O Package.swift dá type-check completo, views SwiftUI
+        # incluídas, sem precisar de projeto.
+        run: |
+          cd mobile/ios
+          xcodebuild -scheme PhoneAuthKit \
+                     -destination 'generic/platform=iOS' \
+                     -skipPackagePluginValidation \
+                     build
 
       - uses: actions/upload-artifact@v4
         if: success()
@@ -111,57 +132,43 @@ jobs:
           retention-days: 14
 
   # ───────────────────────────────────────────────────────────────────────────
-  # App de barra de menu. Liquid Glass exige o SDK do macOS 26.
-  #
-  # `continue-on-error` porque a disponibilidade do runner e do Xcode 26 varia:
-  # a UI não pode derrubar o pipeline do daemon, que é o que de fato autentica.
-  # O passo de detecção falha explicitamente se o SDK for velho, em vez de
-  # compilar contra um SDK antigo e mentir que passou.
+  # App de barra de menu. Máquina explícita porque Liquid Glass não existe
+  # antes do SDK 26 — e sem `continue-on-error`: com a máquina certa, falhar
+  # aqui é falha de verdade e tem que ficar vermelho.
   # ───────────────────────────────────────────────────────────────────────────
-  macos-ui:
-    name: Barra de menu (Liquid Glass)
-    runs-on: macos-latest
-    continue-on-error: true
+  apple-ui:
+    name: Barra de menu, Liquid Glass (macOS 26)
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
-      - name: Selecionar o Xcode mais novo disponível
-        run: |
-          ls /Applications | grep -i '^Xcode' || true
-          newest=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
-          echo "usando $newest"
-          sudo xcode-select -s "$newest"
-          xcodebuild -version
-
-      - name: O SDK tem macOS 26?
-        id: sdk
+      - name: Confirmar o SDK
+        # Assertiva, não detecção. A versão do runner é escolhida acima; isto
+        # existe para a imagem não derivar em silêncio e passarmos a compilar
+        # contra um SDK antigo alegando sucesso — um build verde que não
+        # exercitou o código é pior que um build ausente.
         run: |
           sdk=$(xcrun --sdk macosx --show-sdk-version)
-          echo "sdk=$sdk" >> "$GITHUB_OUTPUT"
-          major=${sdk%%.*}
-          if [ "$major" -lt 26 ]; then
-            echo "::warning::SDK do macOS é $sdk; Liquid Glass precisa de 26. Pulando a compilação da UI."
-            echo "ok=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "ok=true" >> "$GITHUB_OUTPUT"
-          fi
+          echo "SDK do macOS: $sdk"
+          case "$sdk" in
+            26.*|2[7-9].*|[3-9][0-9].*) ;;
+            *) echo "::error::runner macos-26 entregou SDK $sdk; Liquid Glass precisa de 26+"; exit 1 ;;
+          esac
 
       - name: Build da UI
-        if: steps.sdk.outputs.ok == 'true'
         run: swift build -c release --package-path macos/ui
 
       - name: Empacotar o .app
-        if: steps.sdk.outputs.ok == 'true'
         run: |
           cd macos/ui
           ./bundle.sh
           # Sem bundle identifier o UNUserNotificationCenter falha em silêncio,
-          # então confirmar que o Info.plist entrou no lugar certo é barato.
+          # então conferir que o Info.plist entrou é barato e pega regressão.
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' .build/PhoneAuth.app/Contents/Info.plist
           /usr/libexec/PlistBuddy -c 'Print :LSUIElement' .build/PhoneAuth.app/Contents/Info.plist
 
       - uses: actions/upload-artifact@v4
-        if: steps.sdk.outputs.ok == 'true'
+        if: success()
         with:
           name: PhoneAuth-app-${{ github.sha }}
           path: macos/ui/.build/PhoneAuth.app
