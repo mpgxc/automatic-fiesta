@@ -109,6 +109,48 @@ caminho para `PAM_SUCCESS` sem uma resposta positiva do daemon. Toda a
 complexidade — rede, criptografia, estado — fica do lado não-privilegiado dessa
 fronteira.
 
+### A interface gráfica é observadora, nunca decisora
+
+O app de barra de menu (`macos/ui`) roda como você, num processo separado, e
+fala com o daemon por um **segundo socket** — `/var/run/phoneauthd-ui.sock`.
+
+Existem dois sockets porque o de controle é 0600 root:wheel e um app de usuário
+não alcança. Abrir aquele para não-root seria a saída preguiçosa e errada: ele
+carrega pareamento, revogação e rotação.
+
+O socket da UI só publica. Não há caminho de entrada por ele, e é isso que
+sustenta a regra mais importante da interface:
+
+> **Nenhuma notificação do Mac tem botão de aprovar.**
+
+Se fosse possível liberar um `sudo` clicando no Mac, a biometria do celular
+viraria decoração — quem já comprometeu a sessão para disparar o `sudo`
+malicioso também consegue clicar naquele botão. A única aprovação que vale é a
+assinatura que o enclave do celular produz, e ela nunca transita por este canal.
+Um patch que acrescente uma ação de aprovar na notificação é bug de severidade
+máxima, não melhoria de usabilidade.
+
+O arquivo é 0666, mas o portão é a checagem de credencial no `accept`: só o
+usuário logado no console é atendido. Não é excesso de zelo — o histórico
+carrega o `reason` de cada pedido, que é a linha de comando digitada depois do
+`sudo`, e num Mac com mais de uma conta isso não é da conta das outras.
+
+Parear e revogar continuam exigindo root, então os botões da UI abrem o Terminal
+com o comando do `phoneauthctl`. É deliberado: você vê exatamente o que vai
+rodar e digita a própria senha, em vez de um app de barra de menu carregar um
+atalho de privilégio escondido. Um helper privilegiado por XPC é o caminho
+correto e fica para a fase 2.
+
+**Quando notificar.** A regra é notificar o que o usuário não perceberia
+sozinho. Aprovação não notifica — o terminal simplesmente seguiu, e a evidência
+está na tela. Pedido enviado também não — ele acabou de digitar `sudo` e está
+olhando para o cursor; o ícone pulsando basta. Notificam-se negação, expiração,
+ausência de celular, revogação e assinatura inválida.
+
+Notificar tudo produziria uma enxurrada a cada `sudo`, e um usuário treinado a
+dispensar avisos no reflexo já perdeu a defesa que o contexto na tela deveria
+dar. É o mesmo raciocínio do limite de um pedido em voo por dispositivo.
+
 ### Verificação de credencial do par no socket
 
 O daemon confere `LOCAL_PEERCRED` em cada conexão do socket Unix. Pedidos de

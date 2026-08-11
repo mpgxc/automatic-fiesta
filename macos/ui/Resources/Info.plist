@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>PhoneAuth</string>
+    <key>CFBundleDisplayName</key>
+    <string>PhoneAuth</string>
+
+    <!-- O UNUserNotificationCenter exige um bundle identifier registrado. Um
+         executável solto do SwiftPM não tem bundle, e as notificações falham
+         em silêncio — por isso o bundle.sh existe. -->
+    <key>CFBundleIdentifier</key>
+    <string>dev.phoneauth.ui</string>
+
+    <key>CFBundleExecutable</key>
+    <string>PhoneAuthUI</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+
+    <!-- Sem ícone no Dock e sem janela principal: isto vive na barra de menu.
+         Sem esta chave o app apareceria no Dock e no alternador de apps, o que
+         para um indicador de status é só ruído. -->
+    <key>LSUIElement</key>
+    <true/>
+
+    <!-- Liquid Glass. Em versões anteriores o app roda com a aparência antiga
+         em vez de não abrir. -->
+    <key>LSMinimumSystemVersion</key>
+    <string>26.0</string>
+
+    <key>NSHumanReadableCopyright</key>
+    <string>PhoneAuth · MIT</string>
+</dict>
+</plist>

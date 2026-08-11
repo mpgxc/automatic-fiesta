@@ -12,6 +12,11 @@ final class Broker {
     private let rotation: RotationManager
     private let hostName: String
 
+    /// Publica para a interface gráfica. É só narração do que já aconteceu:
+    /// nenhum evento daqui influencia uma decisão de autenticação, e a UI
+    /// não tem canal de volta.
+    var onEvent: ((UIEvent.Event) -> Void)?
+
     private let lock = NSLock()
     private var sessions: [String: PhoneSession] = [:]   // deviceId -> sessão
     private var pairings: [String: PairingSession] = [:] // sid -> pareamento
@@ -42,6 +47,9 @@ final class Broker {
             self.sessions[deviceId] = session
             self.lock.unlock()
             self.registry.touch(id: deviceId)
+            let name = self.registry.device(id: deviceId)?.name ?? deviceId
+            self.onEvent?(UIEvent.Event(kind: .deviceConnected,
+                                        title: "\(name) conectado", deviceName: name))
 
             // O anúncio vai em TODA autenticação enquanto a rotação estiver
             // pendente, e não num broadcast único no momento em que ela começa.
@@ -62,6 +70,10 @@ final class Broker {
             // Sem isto o dispositivo ficaria marcado como "ocupado" para sempre
             // e nenhum pedido novo passaria.
             self.pending.cancelAll(deviceId: deviceId)
+            let name = self.registry.device(id: deviceId)?.name ?? deviceId
+            self.onEvent?(UIEvent.Event(kind: .deviceDisconnected,
+                                        title: "\(name) saiu de alcance",
+                                        detail: "O sudo volta a pedir senha.", deviceName: name))
         }
         session.onPairRequest = { [weak self] request, session in
             self?.handlePairRequest(request, on: session)
@@ -182,6 +194,9 @@ final class Broker {
             // fica olhando um terminal travado enquanto o celular está na
             // outra sala.
             Log.info("pedido de \(request.user) via \(request.service), mas nenhum dispositivo conectado")
+            onEvent?(UIEvent.Event(kind: .requestNoDevice,
+                                   title: "Nenhum celular conectado",
+                                   detail: "O sudo pediu sua senha."))
             return false
         }
 
@@ -217,6 +232,9 @@ final class Broker {
         )
 
         Log.info("pedido \(item.requestId) enviado a \(deviceId): \(context.reason)")
+        let deviceName = registry.device(id: deviceId)?.name
+        onEvent?(UIEvent.Event(kind: .requestSent, title: "Aguardando sua digital",
+                               detail: context.reason, deviceName: deviceName))
 
         let semaphore = DispatchSemaphore(value: 0)
         var approved = false
@@ -236,6 +254,8 @@ final class Broker {
             }
             guard response.decision == .allow else {
                 Log.info("pedido \(response.requestId) negado no celular")
+                self.onEvent?(UIEvent.Event(kind: .requestDenied, title: "Negado no celular",
+                                            detail: context.reason, deviceName: deviceName))
                 return
             }
             guard Int64(Date().timeIntervalSince1970) <= consumed.expiresAt else {
@@ -263,6 +283,8 @@ final class Broker {
                                             publicKeyBase64: device.authPublicKey)) != nil else { continue }
 
                 approved = true
+                self.onEvent?(UIEvent.Event(kind: .requestApproved, title: "Aprovado",
+                                            detail: context.reason, deviceName: deviceName))
                 if index > 0 {
                     Log.warn("pedido \(response.requestId) aceito pelo binding ANTERIOR (graça de rotação ativa)")
                 }
@@ -270,12 +292,18 @@ final class Broker {
                 break
             }
             if !approved {
+                self.onEvent?(UIEvent.Event(kind: .requestRejected,
+                                            title: "Assinatura inválida",
+                                            detail: "Uma resposta chegou com assinatura que não confere. Investigue.",
+                                            deviceName: deviceName))
                 Log.warn("assinatura rejeitada para \(response.requestId)")
             }
         }
 
         if semaphore.wait(timeout: .now() + config.responseTimeoutSeconds) == .timedOut {
             Log.info("pedido \(item.requestId) expirou sem resposta")
+            onEvent?(UIEvent.Event(kind: .requestExpired, title: "Ninguém respondeu",
+                                   detail: context.reason, deviceName: deviceName))
             session.forgetReply(requestId: item.requestId)
             pending.cancel(requestId: item.requestId)
             return false
@@ -425,10 +453,23 @@ final class Broker {
         try registry.add(device)
         pairing.session?.send(Message.PairOk(deviceId: device.id))
         Log.info("dispositivo pareado: \(device.name) (\(device.id))")
+        onEvent?(UIEvent.Event(kind: .devicePaired, title: "Celular pareado",
+                               detail: device.name, deviceName: device.name))
         return device.id
     }
 
     // MARK: - Status
+
+    /// Para o retrato que a UI recebe ao abrir.
+    func connectedDevices() -> [UIEvent.ConnectedDevice] {
+        lock.lock(); defer { lock.unlock() }
+        return sessions.compactMap { deviceId, session in
+            guard session.isAuthenticated, let device = registry.device(id: deviceId) else { return nil }
+            return UIEvent.ConnectedDevice(id: deviceId, name: device.name,
+                                           platform: device.platform,
+                                           since: device.lastSeenAt ?? Date())
+        }
+    }
 
     var connectedDeviceCount: Int {
         lock.lock(); defer { lock.unlock() }

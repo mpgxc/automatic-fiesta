@@ -58,6 +58,19 @@ rotation.onIdentityChanged = { updated in
     }
 }
 
+// Canal de eventos para a interface gráfica. Só publica: não existe caminho
+// de entrada por ele, e a UI não consegue aprovar nada.
+let ui = UIServer(path: Config.uiSocketPath)
+ui.snapshotProvider = {
+    UIEvent.Snapshot(hostName: Host.current().localizedName ?? "Mac",
+                     devicesActive: registry.active().count,
+                     devicesTotal: registry.all().count,
+                     connected: broker.connectedDevices(),
+                     rotationPending: rotation.pendingAnnouncement() != nil,
+                     recent: [])
+}
+broker.onEvent = { event in ui.publish(event) }
+
 let control = ControlServer(path: Config.socketPath)
 control.onAuthRequest = { request, _ in broker.handleAuthRequest(request) }
 control.onControlCommand = { body, uid in
@@ -67,6 +80,7 @@ control.onControlCommand = { body, uid in
 do {
     try listener.start()
     try control.start()
+    try ui.start()
 } catch {
     Log.error("falha ao abrir os listeners: \(error)")
     exit(1)
@@ -78,6 +92,7 @@ let termSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
 termSource.setEventHandler {
     Log.info("SIGTERM recebido; encerrando")
     control.stop()
+    ui.stop()
     listener.stop()
     exit(0)
 }

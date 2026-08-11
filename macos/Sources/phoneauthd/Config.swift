@@ -32,6 +32,10 @@ struct Config: Codable {
 
     static let stateDirectory = URL(fileURLWithPath: "/Library/Application Support/PhoneAuth", isDirectory: true)
     static let socketPath     = "/var/run/phoneauthd.sock"
+    /// Socket separado para a interface gráfica: o de controle é 0600
+    /// root:wheel e um app de barra de menu roda como o usuário. Abrir aquele
+    /// para não-root entregaria pareamento e revogação junto.
+    static let uiSocketPath   = "/var/run/phoneauthd-ui.sock"
 
     static func load() -> Config {
         let url = stateDirectory.appendingPathComponent("config.json")

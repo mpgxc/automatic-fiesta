@@ -50,6 +50,7 @@ impossível sem o dedo dele".
 | `macos/Sources/PhoneAuthCore` | Protocolo, payloads assinados, registro de dispositivos | Escrito, não compilado |
 | `macos/Sources/phoneauthd` | Daemon: socket Unix + TLS + Bonjour + rotação de identidade | Escrito, não compilado |
 | `macos/Sources/phoneauthctl` | CLI: parear, listar, revogar, rotacionar, status | Escrito, não compilado |
+| `macos/ui` | App de barra de menu: SwiftUI, Liquid Glass, notificações | Escrito, não compilado · exige macOS 26 |
 | `mobile/ios` | SwiftUI + Secure Enclave + descoberta Bonjour | Escrito, não compilado |
 | `mobile/android` | Compose + Keystore/StrongBox + descoberta NSD | Kotlin do cliente passou type-check; telas não compiladas |
 
