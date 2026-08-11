@@ -880,12 +880,12 @@ class PhoneAuthClient(
         // veio no próprio QR continua sendo quem decide se do outro lado está o
         // Mac certo, então tentar outro endereço não abre brecha nenhuma.
         val opened = try {
-            openFirst(listOf(Target(host, null, port)), spki, PAIRING_TIMEOUT_MS)
+            openFirst(listOf(Target(host, null, port)), listOf(spki), PAIRING_TIMEOUT_MS)
         } catch (unreachable: Exception) {
             val discovered = discovery?.find(preferredName = name).orEmpty()
                 .map { Target(it.address.hostAddress ?: it.address.toString(), it.address, it.port) }
             if (discovered.isEmpty()) throw unreachable
-            openFirst(discovered, spki, PAIRING_TIMEOUT_MS)
+            openFirst(discovered, listOf(spki), PAIRING_TIMEOUT_MS)
         }
         val ssl = opened.first
         try {
