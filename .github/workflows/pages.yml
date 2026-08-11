@@ -1,0 +1,146 @@
+name: Landing page
+
+on:
+  push:
+    branches: [claude/biometric-macos-mobile-auth-n8b08t]
+    paths:
+      - 'docs/landing/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+# `contents: read` para o checkout; os outros dois são o que o deploy no Pages
+# exige — `id-token` porque o deploy-pages troca um token OIDC pela permissão
+# de publicar, em vez de usar um PAT guardado como segredo.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# `cancel-in-progress: false` de propósito, ao contrário do CI: cancelar um
+# deploy pela metade deixa o site publicado num estado que não corresponde a
+# commit nenhum. Melhor enfileirar e publicar as duas versões em ordem.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Montar o site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guarda — a página não pode depender de recurso externo
+        # A promessa da landing é abrir de qualquer lugar, inclusive `file://`,
+        # sem CDN, sem fonte remota, sem analytics. É fácil de quebrar sem
+        # perceber: basta alguém colar um `<script src>` ou um `@import` de
+        # fonte. Aqui a quebra vira build vermelho em vez de uma requisição
+        # silenciosa saindo do navegador de quem visita.
+        #
+        # `<a href>` externo é permitido: é navegação que o usuário escolhe,
+        # não subrecurso que o navegador busca sozinho.
+        run: |
+          python3 - <<'PY'
+          import re, sys, pathlib
+
+          html = pathlib.Path("docs/landing/index.html").read_text(encoding="utf-8")
+          achados = []
+
+          for m in re.finditer(r'\bsrc\s*=\s*"([^"]*)"', html):
+              achados.append(("src=", m.group(1)))
+          for m in re.finditer(r'<link\b[^>]*>', html, re.I):
+              achados.append(("<link>", m.group(0)[:90]))
+          for m in re.finditer(r'@import[^;]*;', html, re.I):
+              achados.append(("@import", m.group(0)[:90]))
+          for m in re.finditer(r'url\(\s*[\'"]?(?:https?:)?//[^)]*\)', html, re.I):
+              achados.append(("url() remoto", m.group(0)[:90]))
+
+          if achados:
+              for tipo, trecho in achados:
+                  print(f"::error file=docs/landing/index.html::recurso externo ({tipo}): {trecho}")
+              sys.exit(1)
+          print("nenhum subrecurso externo — a página continua autocontida")
+          PY
+
+      - name: Guarda — o HTML e os SVGs precisam parsear
+        # Um SVG malformado não explode: ele some. O elemento simplesmente não
+        # renderiza e o resto da página parece bem. Publicar isso sem perceber é
+        # o modo de falha mais provável desta página, então ele é verificado
+        # antes de o site ir ao ar.
+        run: |
+          python3 - <<'PY'
+          import re, sys, pathlib
+          import xml.etree.ElementTree as ET
+          from html.parser import HTMLParser
+
+          html = pathlib.Path("docs/landing/index.html").read_text(encoding="utf-8")
+          problemas = []
+
+          VOID = {"area","base","br","col","embed","hr","img","input","link",
+                  "meta","param","source","track","wbr"}
+
+          class Checa(HTMLParser):
+              def __init__(self):
+                  super().__init__(convert_charrefs=True); self.pilha = []
+              def handle_starttag(self, tag, attrs):
+                  if tag not in VOID: self.pilha.append((tag, self.getpos()))
+              def handle_endtag(self, tag):
+                  if tag in VOID: return
+                  if not self.pilha:
+                      problemas.append(f"</{tag}> sem abertura, linha {self.getpos()[0]}"); return
+                  topo, pos = self.pilha[-1]
+                  if topo != tag:
+                      problemas.append(f"</{tag}> fecha <{topo}> de {pos}, linha {self.getpos()[0]}")
+                  else:
+                      self.pilha.pop()
+
+          corpo = re.sub(r"<script>.*?</script>", "<script></script>", html, flags=re.S)
+          c = Checa(); c.feed(corpo)
+          if c.pilha:
+              problemas.append(f"nunca fechados: {[t for t, _ in c.pilha]}")
+
+          svgs = re.findall(r"<svg\b.*?</svg>", corpo, flags=re.S)
+          for i, s in enumerate(svgs):
+              try:
+                  ET.fromstring(s)
+              except ET.ParseError as e:
+                  problemas.append(f"svg #{i} malformado: {e}")
+
+          if problemas:
+              for p in problemas:
+                  print(f"::error file=docs/landing/index.html::{p}")
+              sys.exit(1)
+          print(f"HTML equilibrado e {len(svgs)} SVGs bem formados")
+          PY
+
+      - name: Montar o _site
+        # A landing vira a raiz do site. Só ela: os .md de `docs/` seriam
+        # servidos crus pelo Pages, sem Jekyll para renderizá-los, então o
+        # rodapé aponta para o GitHub, que os exibe formatados.
+        run: |
+          mkdir -p _site
+          cp docs/landing/index.html _site/index.html
+          ls -la _site
+
+      - uses: actions/configure-pages@v5
+        # `enablement: true` liga o Pages na primeira execução, com origem
+        # "GitHub Actions", em vez de exigir que alguém abra as configurações do
+        # repositório antes. Se falhar por política da organização, é aqui que
+        # aparece — e o caminho manual é Settings → Pages → Source: Actions.
+        with:
+          enablement: true
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    name: Publicar
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

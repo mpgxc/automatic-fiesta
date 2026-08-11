@@ -415,7 +415,12 @@ footer a:hover{color:var(--ink)}
 
 <footer><div class="wrap">
   <p>PhoneAuth · código aberto sob licença MIT</p>
-  <p style="margin-top:8px">Projeto em desenvolvimento — leia <a href="../status.md">o status real</a> e o <a href="../modelo-de-ameacas.md">modelo de ameaças</a> antes de instalar.</p>
+  <!-- Absolutos, e via `blob/HEAD`, porque esta página é servida de duas raízes
+       diferentes: `docs/landing/` no repositório e a raiz do GitHub Pages. Um
+       caminho relativo só pode acertar uma das duas, e `HEAD` acompanha a
+       branch padrão sem apodrecer se ela for renomeada. -->
+  <p style="margin-top:8px">Projeto em desenvolvimento — leia <a href="https://github.com/mpgxc/automatic-fiesta/blob/HEAD/docs/status.md">o status real</a> e o <a href="https://github.com/mpgxc/automatic-fiesta/blob/HEAD/docs/modelo-de-ameacas.md">modelo de ameaças</a> antes de instalar.</p>
+  <p style="margin-top:8px"><a href="https://github.com/mpgxc/automatic-fiesta">Código no GitHub</a></p>
 </div></footer>
 
 <script>
