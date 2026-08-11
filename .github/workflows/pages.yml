@@ -189,3 +189,45 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+
+      - name: Conferir que a URL publicada serve a nossa página
+        # Um deploy verde não prova que o site ficou certo. Quando a origem do
+        # Pages está em "Deploy from a branch", o GitHub roda um build de Jekyll
+        # em paralelo e publica o README na mesma URL — os dois workflows
+        # terminam em verde e vence o último a subir. Já aconteceu aqui, e
+        # passou despercebido justamente porque nada olhava o resultado.
+        #
+        # O marcador é um comentário HTML no topo de docs/landing/index.html.
+        run: |
+          url="${{ steps.deployment.outputs.page_url }}"
+          echo "verificando $url"
+          for tentativa in 1 2 3 4 5 6; do
+            corpo=$(curl -fsSL --max-time 20 "$url" || true)
+            if printf '%s' "$corpo" | grep -q 'PHONEAUTH-LANDING-V1'; then
+              echo "✓ a página no ar é a landing deste repositório"
+              exit 0
+            fi
+            gerador=$(printf '%s' "$corpo" | grep -oiE 'name="generator" content="[^"]*"' || true)
+            echo "  tentativa $tentativa: ainda não é a nossa página ${gerador:+($gerador)}"
+            sleep 10
+          done
+
+          {
+            echo "## O deploy subiu, mas a URL serve outra coisa"
+            echo
+            echo "O marcador \`PHONEAUTH-LANDING-V1\` não apareceu em <$url>."
+            echo
+            if printf '%s' "$corpo" | grep -qi 'jekyll'; then
+              echo 'A resposta veio do **Jekyll**, o que significa que a origem do'
+              echo 'Pages está em "Deploy from a branch". Nessa configuração o'
+              echo 'GitHub publica o repositório processado por Jekyll e sobrescreve'
+              echo 'o que este workflow envia.'
+              echo
+              echo '**Settings → Pages → Source: "GitHub Actions"**'
+            else
+              echo 'Pode ser cache de CDN ainda propagando, ou outra origem'
+              echo 'publicando na mesma URL. Confira Settings → Pages.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::A URL publicada não serve esta landing. Veja o resumo do run."
+          exit 1
