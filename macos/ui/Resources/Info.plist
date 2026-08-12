@@ -17,10 +17,12 @@
     <string>PhoneAuthUI</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <!-- Substituídos pelo bundle.sh a partir do VERSION na raiz. Este arquivo
+         é template: a versão literal aqui já divergiu do Android uma vez. -->
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>__VERSAO__</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>__VERSAO__</string>
 
     <!-- Sem ícone no Dock e sem janela principal: isto vive na barra de menu.
          Sem esta chave o app apareceria no Dock e no alternador de apps, o que

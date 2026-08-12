@@ -68,6 +68,33 @@ jobs:
             exit 1
           fi
 
+      - name: Guarda — a versão só existe no VERSION
+        # O Info.plist da UI ficou em 0.1.0 enquanto o Android já estava em
+        # 0.1.1, e nada acusou porque nada comparava as duas. Agora ambos
+        # derivam do VERSION, e esta guarda existe para que a segunda cópia não
+        # volte a aparecer — é mais fácil recolar um literal do que perceber que
+        # ele voltou.
+        run: |
+          falhou=0
+
+          if ! grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' VERSION; then
+            echo "::error file=VERSION::VERSION precisa conter só MAJOR.MINOR.PATCH"
+            falhou=1
+          fi
+
+          if grep -nE 'version(Name|Code) *= *"?[0-9]' mobile/android/app/build.gradle.kts; then
+            echo "::error file=mobile/android/app/build.gradle.kts::versão literal aqui; ela deve vir do VERSION"
+            falhou=1
+          fi
+
+          if grep -A1 'CFBundleShortVersionString' macos/ui/Resources/Info.plist | grep -qE '<string>[0-9]'; then
+            echo "::error file=macos/ui/Resources/Info.plist::versão literal aqui; o bundle.sh substitui __VERSAO__"
+            falhou=1
+          fi
+
+          [ "$falhou" -eq 0 ] && echo "a versão vive só no VERSION: $(cat VERSION)"
+          exit $falhou
+
       - name: Vetores de teste são determinísticos
         run: |
           python3 docs/generate-test-vectors.py > /tmp/regenerated.json
