@@ -1,21 +1,17 @@
 name: Release
 
 on:
-  # O caminho normal: mudar o VERSION na raiz e mergear. O merge é o ato de
-  # publicar, e é explícito — o arquivo não serve para mais nada, então tocá-lo
-  # É a intenção. Sem tag para empurrar, sem botão para lembrar de apertar,
-  # sem uma segunda declaração de versão para manter em dia.
+  # Toda mudança que chega em main vira release. O patch avança sozinho; quem
+  # quiser escolher a versão — minor ou major — edita o VERSION no próprio PR e
+  # o workflow respeita o que estiver escrito.
+  #
+  # Para um merge que não deve publicar, ponha `[skip release]` na mensagem do
+  # commit de merge. É a escotilha, e ela é explícita: preferimos que alguém
+  # peça para pular a que o workflow adivinhe o que "merece" uma versão.
   push:
     branches: [main]
-    paths: ['VERSION']
 
-  # Escotilha: republicar sem mexer no VERSION. Sem campo de versão de
-  # propósito — ela vem do VERSION como em todo o resto, e um campo digitável
-  # seria uma segunda fonte da verdade entrando pela porta dos fundos.
-  #
-  # Não há gatilho por tag. A tag passou a ser consequência da publicação, não
-  # causa: quem a empurra à mão não publica nada. Um `push: tags` aqui também
-  # colidiria com o filtro de `paths` acima, que não se aplica a tags.
+  # Republicar a versão que estiver no VERSION, sem mexer em nada.
   workflow_dispatch:
 
 # `contents: write` é o que permite criar a release e anexar os arquivos. É a
@@ -24,56 +20,113 @@ on:
 permissions:
   contents: write
 
+# Sem `github.ref` no grupo: dois merges seguidos em main são o mesmo ref, e
+# precisam enfileirar em vez de correr juntos — senão os dois leem o mesmo
+# VERSION e disputam a mesma versão.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 jobs:
   # ───────────────────────────────────────────────────────────────────────────
-  coerencia:
-    name: Ler e validar o VERSION
+  versao:
+    name: Decidir a versão
     runs-on: ubuntu-latest
     outputs:
-      versao: ${{ steps.v.outputs.versao }}
-      tag: ${{ steps.v.outputs.tag }}
+      versao:   ${{ steps.v.outputs.versao }}
+      tag:      ${{ steps.v.outputs.tag }}
+      sha:      ${{ steps.v.outputs.sha }}
+      publicar: ${{ steps.v.outputs.publicar }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # O passo pode commitar o bump de volta; precisa da credencial e do
+          # histórico para isso.
+          fetch-depth: 0
+          persist-credentials: true
 
       - id: v
-        # Não há mais o que conferir entre duas declarações — só existe uma. O
-        # que sobrou é validar o formato, porque tudo deriva daqui: o
-        # versionCode do Android é calculado a partir destes três números, e um
-        # VERSION malformado quebraria o build do Android com uma mensagem que
-        # não apontaria para cá.
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          versao="$(tr -d '[:space:]' < VERSION)"
-          echo "VERSION = '$versao'"
+          set -euo pipefail
 
-          if ! printf '%s' "$versao" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "::error file=VERSION::VERSION precisa ser MAJOR.MINOR.PATCH; veio '$versao'"
+          if git log -1 --pretty=%B | grep -qiF '[skip release]'; then
+            echo "commit pede [skip release]; nada a publicar"
+            echo "publicar=nao" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          declarada="$(tr -d '[:space:]' < VERSION)"
+          if ! printf '%s' "$declarada" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error file=VERSION::VERSION precisa ser MAJOR.MINOR.PATCH; veio '$declarada'"
             exit 1
           fi
 
-          # Aviso, não erro: republicar é o propósito declarado do
-          # workflow_dispatch, e falhar aqui tiraria a escotilha justamente de
-          # quem foi buscá-la. Mas ninguém deve descobrir por acaso que
-          # sobrescreveu uma release.
+          # Compara com o que está PUBLICADO, não com o histórico do git. É o
+          # que sobrevive a rebase, squash e merge commit sem precisar entender
+          # nenhum dos três.
+          ultima="$(gh release list --limit 1 --json tagName --jq '.[0].tagName // ""' | sed 's/^v//')"
+          echo "declarada no VERSION: $declarada    última publicada: ${ultima:-nenhuma}"
+
+          if [ -z "$ultima" ] || [ "$declarada" != "$ultima" ]; then
+            # Ou é a primeira release, ou alguém escolheu a versão à mão no PR.
+            # Nos dois casos, a intenção humana ganha.
+            versao="$declarada"
+            bump=nao
+          else
+            IFS=. read -r maior menor patch <<< "$declarada"
+            versao="$maior.$menor.$((patch + 1))"
+            bump=sim
+          fi
+          echo "versão desta release: $versao"
+
+          sha="$GITHUB_SHA"
+          if [ "$bump" = sim ]; then
+            # O VERSION precisa estar bumpado ANTES do build: o versionName e o
+            # versionCode do APK derivam dele. Por isso o commit volta para main
+            # e os jobs seguintes constroem a partir dele, não do merge.
+            printf '%s\n' "$versao" > VERSION
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add VERSION
+            git commit -q -m "Versão $versao
+
+          Bump automático: toda mudança em main publica uma release e o patch
+          avança sozinho. Para escolher a versão à mão, edite o VERSION no
+          próprio PR — o workflow respeita o que estiver escrito.
+
+          [skip release]"
+
+            if ! git push origin "HEAD:$GITHUB_REF_NAME"; then
+              echo "::error::não consegui empurrar o bump do VERSION para $GITHUB_REF_NAME."
+              echo "::error::O versionamento automático precisa que este workflow possa escrever em main — verifique proteção de branch. Alternativa: bumpar o VERSION à mão no PR."
+              exit 1
+            fi
+            sha="$(git rev-parse HEAD)"
+          fi
+
           if gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$versao" >/dev/null 2>&1; then
             echo "::warning::a release v$versao já existe; os artefatos serão substituídos"
           fi
 
-          echo "versao=$versao" >> "$GITHUB_OUTPUT"
-          echo "tag=v$versao"   >> "$GITHUB_OUTPUT"
-        env:
-          GH_TOKEN: ${{ github.token }}
+          echo "versao=$versao"   >> "$GITHUB_OUTPUT"
+          echo "tag=v$versao"     >> "$GITHUB_OUTPUT"
+          echo "sha=$sha"         >> "$GITHUB_OUTPUT"
+          echo "publicar=sim"     >> "$GITHUB_OUTPUT"
 
   # ───────────────────────────────────────────────────────────────────────────
   macos:
     name: Daemon, CLI e módulo PAM
-    needs: coerencia
+    needs: versao
+    if: needs.versao.outputs.publicar == 'sim'
     runs-on: macos-15
     steps:
+      # O commit do bump, não o de merge: é ele que tem o VERSION desta
+      # release, e é dele que o tarball e o .pkg precisam sair.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.versao.outputs.sha }}
 
       - name: Build universal do daemon e da CLI
         # arm64 + x86_64 no mesmo binário. Os runners são Apple Silicon; sem o
@@ -147,7 +200,7 @@ jobs:
         # checkout e o pacote. As fontes ficam de fora — é a ausência delas que
         # faz o script pular a compilação.
         run: |
-          v="${{ needs.coerencia.outputs.versao }}"
+          v="${{ needs.versao.outputs.versao }}"
           raiz="phoneauth-$v-macos"
           mkdir -p "$raiz/macos/.build/release" "$raiz/macos/pam" "$raiz/macos/LaunchDaemon" "$raiz/scripts"
 
@@ -194,7 +247,7 @@ jobs:
         env:
           MACOS_INSTALLER_IDENTITY: ${{ secrets.MACOS_INSTALLER_IDENTITY }}
         run: |
-          v="${{ needs.coerencia.outputs.versao }}"
+          v="${{ needs.versao.outputs.versao }}"
           chmod +x macos/installer/build-pkg.sh macos/installer/scripts/postinstall
           macos/installer/build-pkg.sh "$v" "${{ steps.bin.outputs.dir }}" "phoneauth-$v.pkg"
           shasum -a 256 "phoneauth-$v.pkg" | tee "phoneauth-$v.pkg.sha256"
@@ -212,12 +265,17 @@ jobs:
   # ───────────────────────────────────────────────────────────────────────────
   android:
     name: APK de release
-    needs: coerencia
+    needs: versao
+    if: needs.versao.outputs.publicar == 'sim'
     runs-on: ubuntu-latest
     outputs:
       assinado: ${{ steps.apk.outputs.assinado }}
     steps:
+      # Idem: o versionName e o versionCode do APK derivam do VERSION deste
+      # commit. Construir do merge produziria um APK com a versão anterior.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.versao.outputs.sha }}
 
       - uses: actions/setup-java@v4
         with:
@@ -260,7 +318,7 @@ jobs:
         env:
           KEYSTORE_PRESENTE: ${{ steps.keystore.outputs.presente }}
         run: |
-          v="${{ needs.coerencia.outputs.versao }}"
+          v="${{ needs.versao.outputs.versao }}"
           origem=$(ls mobile/android/app/build/outputs/apk/release/*.apk | head -1)
           echo "APK construído: $origem"
 
@@ -318,7 +376,8 @@ jobs:
   # ───────────────────────────────────────────────────────────────────────────
   publicar:
     name: Publicar a release
-    needs: [coerencia, macos, android]
+    needs: [versao, macos, android]
+    if: needs.versao.outputs.publicar == 'sim'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -328,7 +387,7 @@ jobs:
 
       - name: Escrever as notas
         env:
-          VERSAO: ${{ needs.coerencia.outputs.versao }}
+          VERSAO: ${{ needs.versao.outputs.versao }}
           ASSINADO: ${{ needs.android.outputs.assinado }}
         run: |
           ls -la dist
@@ -404,28 +463,53 @@ jobs:
             echo
             echo "Cada arquivo tem um \`.sha256\` ao lado."
             echo
-            echo "## Estado do projeto"
+            echo "## Escopo"
             echo
-            echo "Primeira versão publicada. Não cobre desbloqueio do FileVault"
-            echo "no boot nem os diálogos gráficos do SecurityAgent — só a pilha"
-            echo "PAM (sudo, su). Exige o celular na mesma rede local."
+            echo "Não cobre desbloqueio do FileVault no boot nem os diálogos"
+            echo "gráficos do SecurityAgent — só a pilha PAM (\`sudo\`, \`su\`)."
+            echo "Exige o celular na mesma rede local."
           } > notas.md
+
+      - name: Anexar o changelog gerado
+        # O GitHub monta "What's Changed" a partir dos PRs entre esta tag e a
+        # anterior. Gerado pela API e concatenado aqui, em vez de passado como
+        # `--generate-notes` ao `gh release create`: assim a ordem é nossa — as
+        # instruções de instalação primeiro, o changelog depois — e o resultado
+        # não muda conforme a versão do gh no runner.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.versao.outputs.tag }}
+          SHA: ${{ needs.versao.outputs.sha }}
+        run: |
+          gerado="$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+                      -f tag_name="$TAG" -f target_commitish="$SHA" \
+                      --jq .body 2>/dev/null || true)"
+
+          if [ -n "$gerado" ]; then
+            { echo; echo "---"; echo; printf '%s\n' "$gerado"; } >> notas.md
+            echo "changelog anexado"
+          else
+            # Não é motivo para falhar: a release com os artefatos e as
+            # instruções vale mais do que a lista de PRs.
+            echo "::warning::não consegui gerar o changelog; publicando sem ele"
+          fi
+
+          echo "── notas finais ──"
+          cat notas.md
           cat notas.md
 
       - name: Criar ou completar a release
-        # Três rotas chegam aqui e todas terminam no mesmo lugar:
-        #
-        #   · workflow_dispatch — não existe tag nem release; `gh release
-        #     create --target` cria as duas, apontando para o commit que este
-        #     run realmente construiu.
-        #   · push de tag — a tag existe, a release não.
-        #   · "Draft a new release" na interface — tag e release já existem, e
-        #     um `create` cru falharia com "already exists" depois de todo o
-        #     build, deixando a release publicada e vazia.
+        # Duas rotas chegam aqui e as duas terminam no mesmo lugar: a release
+        # nova, em que `gh release create --target` cria tag e release de uma
+        # vez; e a republicação, em que ambas já existem e um `create` cru
+        # falharia com "already exists" depois de todo o build, deixando a
+        # release publicada e vazia.
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.coerencia.outputs.tag }}
-          TITULO: PhoneAuth ${{ needs.coerencia.outputs.versao }}
+          TAG: ${{ needs.versao.outputs.tag }}
+          TITULO: PhoneAuth ${{ needs.versao.outputs.versao }}
+          # O commit do bump, que é o que foi construído — não o de merge.
+          ALVO: ${{ needs.versao.outputs.sha }}
         run: |
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "release $TAG já existe; completando com as notas e os arquivos"
@@ -442,8 +526,8 @@ jobs:
           if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
             echo "tag $TAG já existe; criando a release sobre ela"
           else
-            echo "criando tag $TAG em $GITHUB_SHA"
-            alvo=(--target "$GITHUB_SHA")
+            echo "criando tag $TAG em $ALVO"
+            alvo=(--target "$ALVO")
           fi
 
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
