@@ -1,19 +1,22 @@
 name: Release
 
 on:
+  # O caminho normal: mudar o VERSION na raiz e mergear. O merge é o ato de
+  # publicar, e é explícito — o arquivo não serve para mais nada, então tocá-lo
+  # É a intenção. Sem tag para empurrar, sem botão para lembrar de apertar,
+  # sem uma segunda declaração de versão para manter em dia.
   push:
-    tags: ['v*']
-  # Publicar sem precisar criar a tag antes. A tag passa a nascer do próprio
-  # workflow, via `gh release create`, com o token que já tem `contents:
-  # write` — o que também elimina a classe de erro que já nos custou um
-  # release: tag apontando para um commit anterior à correção, e a única saída
-  # sendo apagá-la e recriá-la.
+    branches: [main]
+    paths: ['VERSION']
+
+  # Escotilha: republicar sem mexer no VERSION. Sem campo de versão de
+  # propósito — ela vem do VERSION como em todo o resto, e um campo digitável
+  # seria uma segunda fonte da verdade entrando pela porta dos fundos.
+  #
+  # Não há gatilho por tag. A tag passou a ser consequência da publicação, não
+  # causa: quem a empurra à mão não publica nada. Um `push: tags` aqui também
+  # colidiria com o filtro de `paths` acima, que não se aplica a tags.
   workflow_dispatch:
-    inputs:
-      versao:
-        description: 'Versão a publicar, sem o "v" (ex.: 0.1.1). Precisa bater com o versionName do build.gradle.kts.'
-        required: true
-        type: string
 
 # `contents: write` é o que permite criar a release e anexar os arquivos. É a
 # única permissão elevada aqui, e só este workflow a tem — o CI e o Pages
@@ -28,7 +31,7 @@ concurrency:
 jobs:
   # ───────────────────────────────────────────────────────────────────────────
   coerencia:
-    name: A versão bate com a declarada
+    name: Ler e validar o VERSION
     runs-on: ubuntu-latest
     outputs:
       versao: ${{ steps.v.outputs.versao }}
@@ -37,31 +40,32 @@ jobs:
       - uses: actions/checkout@v4
 
       - id: v
-        # Publicar 0.2.0 com versionName 0.1.0 produz um APK que se anuncia
-        # como a versão anterior. O usuário instala, o "sobre" mostra outra
-        # coisa, e a confusão só aparece depois. Barato de impedir aqui.
-        env:
-          ENTRADA: ${{ inputs.versao }}
+        # Não há mais o que conferir entre duas declarações — só existe uma. O
+        # que sobrou é validar o formato, porque tudo deriva daqui: o
+        # versionCode do Android é calculado a partir destes três números, e um
+        # VERSION malformado quebraria o build do Android com uma mensagem que
+        # não apontaria para cá.
         run: |
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            versao="$ENTRADA"
-          else
-            versao="$GITHUB_REF_NAME"
-          fi
-          # Tolera o "v" digitado no campo: quem preenche à mão escreve
-          # "v0.1.1" com a mesma naturalidade que "0.1.1", e recusar por isso
-          # seria rigor sem propósito.
-          versao="${versao#v}"
+          versao="$(tr -d '[:space:]' < VERSION)"
+          echo "VERSION = '$versao'"
 
-          declarada=$(grep -oE 'versionName = "[^"]+"' mobile/android/app/build.gradle.kts | cut -d'"' -f2)
-          echo "pedida=$versao  build.gradle.kts=$declarada"
-          if [ "$versao" != "$declarada" ]; then
-            echo "::error file=mobile/android/app/build.gradle.kts::versão pedida ($versao) não bate com versionName ($declarada)"
+          if ! printf '%s' "$versao" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error file=VERSION::VERSION precisa ser MAJOR.MINOR.PATCH; veio '$versao'"
             exit 1
           fi
 
-          echo "versao=$versao"  >> "$GITHUB_OUTPUT"
-          echo "tag=v$versao"    >> "$GITHUB_OUTPUT"
+          # Aviso, não erro: republicar é o propósito declarado do
+          # workflow_dispatch, e falhar aqui tiraria a escotilha justamente de
+          # quem foi buscá-la. Mas ninguém deve descobrir por acaso que
+          # sobrescreveu uma release.
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$versao" >/dev/null 2>&1; then
+            echo "::warning::a release v$versao já existe; os artefatos serão substituídos"
+          fi
+
+          echo "versao=$versao" >> "$GITHUB_OUTPUT"
+          echo "tag=v$versao"   >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   # ───────────────────────────────────────────────────────────────────────────
   macos:

@@ -34,7 +34,21 @@ echo "==> Montando $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/PhoneAuthUI "$APP/Contents/MacOS/PhoneAuthUI"
-cp Resources/Info.plist "$APP/Contents/Info.plist"
+
+# O Info.plist do repositório é template: a versão entra aqui, vinda do VERSION
+# na raiz. Antes ela era literal e ficou em 0.1.0 enquanto o Android já estava
+# em 0.1.1 — divergência que ninguém percebeu porque nada as comparava.
+VERSAO="$(tr -d '[:space:]' < "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/VERSION")"
+if [[ -z "$VERSAO" ]]; then
+    echo "erro: VERSION vazio ou ausente na raiz do repositório" >&2
+    exit 1
+fi
+sed "s/__VERSAO__/$VERSAO/g" Resources/Info.plist > "$APP/Contents/Info.plist"
+
+if grep -q '__VERSAO__' "$APP/Contents/Info.plist"; then
+    echo "erro: placeholder de versão sobrou no Info.plist" >&2
+    exit 1
+fi
 
 if [[ -n "$SIGN_ID" ]]; then
     echo "==> Assinando com $SIGN_ID"

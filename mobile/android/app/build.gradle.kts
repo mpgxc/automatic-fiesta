@@ -4,6 +4,23 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// A versão vive em VERSION, na raiz do repositório, e nada mais a declara.
+//
+// Antes existiam duas cópias — o versionName aqui e o CFBundleShortVersionString
+// do Info.plist da UI — e elas já tinham divergido, 0.1.1 contra 0.1.0, sem
+// ninguém notar. Duas cópias de um mesmo fato não permanecem iguais por boa
+// vontade; permanecem iguais quando só existe uma.
+val versao = rootProject.file("../../VERSION").readText().trim()
+
+// Derivado, não digitado. O Android compara o versionCode para decidir se um
+// APK é atualização, e esquecer de subi-lo produz um pacote que se recusa a
+// instalar sobre o anterior sem dizer por quê — foi o que quase aconteceu no
+// bump anterior, lembrado por acaso. 0.1.1 vira 101; 1.2.3 vira 10203.
+val versaoCodigo = versao.split(".").let { partes ->
+    require(partes.size == 3) { "VERSION precisa ser MAJOR.MINOR.PATCH; veio '$versao'" }
+    partes[0].toInt() * 10000 + partes[1].toInt() * 100 + partes[2].toInt()
+}
+
 android {
     namespace = "dev.phoneauth"
     compileSdk = 35
@@ -14,12 +31,8 @@ android {
         // fallback para o método depreciado abaixo disso. StrongBox exige 28+.
         minSdk = 29
         targetSdk = 35
-        // versionCode é o que o Android compara para decidir se um APK é
-        // atualização: precisa subir a cada publicação, mesmo quando a mudança
-        // é só de pipeline. Um APK com versionCode igual ou menor é recusado
-        // sobre a instalação existente, sem explicação útil ao usuário.
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = versaoCodigo
+        versionName = versao
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
