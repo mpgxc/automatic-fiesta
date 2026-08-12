@@ -22,11 +22,37 @@ fi
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-echo "==> Construindo o daemon e a CLI"
-(cd macos && swift build -c release)
+# ---------------------------------------------------------------------------
+# Construir ou usar o que já veio pronto
+#
+# O mesmo script serve a dois contextos: um checkout do repositório, onde há
+# fontes e toolchain, e o tarball de release, que traz só os binários. A
+# distinção é a presença das fontes — não uma flag, porque flag esquecida vira
+# erro confuso ("swift: command not found") em vez de comportamento correto.
+# ---------------------------------------------------------------------------
+if [[ -f macos/Package.swift ]]; then
+    echo "==> Construindo o daemon e a CLI"
+    (cd macos && swift build -c release)
+else
+    echo "==> Usando o daemon e a CLI pré-construídos"
+fi
 
-echo "==> Construindo o módulo PAM"
-(cd macos/pam && make)
+if [[ -f macos/pam/Makefile ]]; then
+    echo "==> Construindo o módulo PAM"
+    (cd macos/pam && make)
+else
+    echo "==> Usando o módulo PAM pré-construído"
+fi
+
+for artefato in macos/.build/release/phoneauthd \
+                macos/.build/release/phoneauthctl \
+                macos/pam/pam_phoneauth.so \
+                macos/LaunchDaemon/dev.phoneauth.daemon.plist; do
+    if [[ ! -f "$artefato" ]]; then
+        echo "erro: $artefato não existe — pacote incompleto ou build falhou" >&2
+        exit 1
+    fi
+done
 
 echo "==> Criando $STATE_DIR"
 install -d -o root -g wheel -m 0700 "$STATE_DIR"
