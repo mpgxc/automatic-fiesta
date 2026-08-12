@@ -6,26 +6,31 @@ import PhoneAuthCore
 // phoneauthctl — cliente de linha de comando do phoneauthd.
 
 let usage = """
-uso: phoneauthctl <comando>
+uso: sudo phoneauthctl <comando>
+
+TODO comando exige root. O socket de controle é 0600 root:wheel de propósito:
+quem o alcança pode parear e revogar dispositivos, o que é o mesmo que decidir
+quem aprova seus sudos.
 
   status              mostra o estado do daemon
   list                lista os dispositivos pareados
-  pair                pareia um novo celular (exige sudo)
-  revoke <id>         revoga um dispositivo, mantendo o histórico (exige sudo)
-  remove <id>         apaga um dispositivo do registro (exige sudo)
+  pair                pareia um novo celular
+  revoke <id>         revoga um dispositivo, mantendo o histórico
+  remove <id>         apaga um dispositivo do registro
 
   rotate              mostra o estado da rotação da identidade TLS
-  rotate begin        gera uma identidade nova e anuncia aos celulares (exige sudo)
+  rotate begin        gera uma identidade nova e anuncia aos celulares
        --compromised  a chave antiga vazou: troca na hora, sem janela e sem
                       graça. TODOS os dispositivos terão que parear de novo.
-  rotate commit       passa a usar a identidade anunciada (exige sudo)
+  rotate commit       passa a usar a identidade anunciada
        --force        comita antes da janela fechar ou com dispositivos ainda
                       sem confirmar — eles ficarão trancados para fora
-  rotate abort        descarta a rotação anunciada (exige sudo)
+  rotate abort        descarta a rotação anunciada
   rotate qr           mostra o anúncio assinado como QR, para o celular que
                       ficou fora do ar a janela inteira
 
-Desenho e trade-offs da rotação: docs/rotacao-de-identidade.md
+Uso no dia a dia: docs/uso.md
+Rotação, desenho e trade-offs: docs/rotacao-de-identidade.md
 """
 
 // MARK: - Transporte
@@ -42,13 +47,37 @@ enum Client {
             raw.copyBytes(from: Array(Config.socketPath.utf8))
         }
 
+        // O errno é capturado dentro do closure, junto ao `connect`: qualquer
+        // chamada entre um e outro poderia sobrescrevê-lo.
+        var falha: Int32 = 0
         let connected = withUnsafePointer(to: &addr) { ptr -> Int32 in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-                connect(fd, sa, socklen_t(MemoryLayout<sockaddr_un>.size))
+                let r = connect(fd, sa, socklen_t(MemoryLayout<sockaddr_un>.size))
+                if r != 0 { falha = errno }
+                return r
             }
         }
         guard connected == 0 else {
-            throw Failure("phoneauthd não está rodando (socket em \(Config.socketPath))")
+            // Antes, qualquer falha de connect virava "phoneauthd não está
+            // rodando". A mais comum é EACCES — o socket é 0600 root:wheel, de
+            // propósito, então todo comando exige sudo — e aquela mensagem
+            // mandava a pessoa investigar o daemon, que estava perfeitamente no
+            // ar. Distinguir os casos é a diferença entre um minuto e uma tarde.
+            switch falha {
+            case EACCES, EPERM:
+                throw Failure("""
+                    sem permissão para falar com o phoneauthd.
+
+                    O socket de controle é 0600 root:wheel de propósito: quem o
+                    alcança pode parear e revogar dispositivos. Rode com sudo.
+                    """)
+            case ENOENT:
+                throw Failure("phoneauthd não está rodando: não existe socket em \(Config.socketPath)")
+            case ECONNREFUSED:
+                throw Failure("o socket existe mas ninguém escuta em \(Config.socketPath); o daemon caiu — veja /var/log/phoneauthd.log")
+            default:
+                throw Failure("não foi possível falar com o phoneauthd em \(Config.socketPath): \(String(cString: strerror(falha)))")
+            }
         }
 
         var tv = timeval(tv_sec: Int(timeout), tv_usec: 0)
@@ -315,7 +344,7 @@ func commandRotateBegin(compromised: Bool) throws {
     print("\nA identidade viva continua sendo a ANTIGA. Nada quebra até o commit.")
     print("commit liberado a partir de: \(moment(response["commitNotBefore"]))")
     print("\nDeixe cada celular conectar uma vez, acompanhe com:")
-    print("  phoneauthctl rotate")
+    print("  sudo phoneauthctl rotate")
     print("e então:")
     print("  sudo phoneauthctl rotate commit")
 }
@@ -330,7 +359,7 @@ func commandRotateCommit(force: Bool) throws {
         print("binding anterior ainda aceito até \(moment(until)) (docs/rotacao-de-identidade.md §4.6)")
     }
     print("\nAs sessões foram derrubadas; os celulares reconectam sozinhos.")
-    print("Confirme com: phoneauthctl status")
+    print("Confirme com: sudo phoneauthctl status")
 }
 
 func commandRotateAbort() throws {
@@ -374,7 +403,7 @@ do {
     case "list":   try commandList()
     case "pair":   try commandPair()
     case "revoke", "remove":
-        guard arguments.count >= 2 else { throw Failure("informe o id do dispositivo (veja: phoneauthctl list)") }
+        guard arguments.count >= 2 else { throw Failure("informe o id do dispositivo (veja: sudo phoneauthctl list)") }
         try commandRevoke(arguments[1], remove: command == "remove")
     case "rotate":
         let sub = arguments.count >= 2 ? arguments[1] : "status"

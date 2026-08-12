@@ -215,7 +215,7 @@ jobs:
     needs: coerencia
     runs-on: ubuntu-latest
     outputs:
-      assinado: ${{ steps.keystore.outputs.assinado }}
+      assinado: ${{ steps.apk.outputs.assinado }}
     steps:
       - uses: actions/checkout@v4
 
@@ -234,10 +234,10 @@ jobs:
           if [ -n "$KEYSTORE_B64" ]; then
             printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
             echo "path=$RUNNER_TEMP/release.jks" >> "$GITHUB_OUTPUT"
-            echo "assinado=sim" >> "$GITHUB_OUTPUT"
-            echo "keystore presente; o APK sairá assinado"
+            echo "presente=sim" >> "$GITHUB_OUTPUT"
+            echo "keystore presente"
           else
-            echo "assinado=nao" >> "$GITHUB_OUTPUT"
+            echo "presente=nao" >> "$GITHUB_OUTPUT"
             echo "::warning::sem ANDROID_KEYSTORE_BASE64; o APK sairá SEM assinatura e não instala"
           fi
 
@@ -249,17 +249,52 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: gradle --project-dir mobile/android assembleRelease --no-daemon
 
-      - name: Renomear e somar
+      - id: apk
+        name: Verificar a assinatura, nomear e somar
+        # O rótulo "assinado" vinha de duas suposições independentes: o secret
+        # existir, e o nome que o Gradle deu ao arquivo. Nenhuma das duas olhava
+        # o artefato. Se a assinatura falhasse em silêncio — alias errado,
+        # keystore que decodifica para lixo — a release anunciaria um APK
+        # assinado que não instala, que é exatamente o problema que o rótulo
+        # existe para evitar. Agora quem decide é o apksigner.
+        env:
+          KEYSTORE_PRESENTE: ${{ steps.keystore.outputs.presente }}
         run: |
           v="${{ needs.coerencia.outputs.versao }}"
           origem=$(ls mobile/android/app/build/outputs/apk/release/*.apk | head -1)
-          case "$origem" in
-            *unsigned*) destino="phoneauth-$v-SEM-ASSINATURA.apk" ;;
-            *)          destino="phoneauth-$v.apk" ;;
-          esac
+          echo "APK construído: $origem"
+
+          # apksigner vive no build-tools do SDK, que já está no runner — o
+          # próprio assembleRelease depende dele.
+          raiz="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          apksigner=$(ls -d "$raiz"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)
+          if [ -z "$apksigner" ]; then
+            echo "::error::apksigner não encontrado sob $raiz/build-tools; sem ele não há como afirmar se o APK está assinado"
+            exit 1
+          fi
+
+          if "$apksigner" verify --print-certs "$origem"; then
+            assinado=sim
+          else
+            assinado=nao
+          fi
+          echo "assinatura verificada: $assinado"
+
+          if [ "$KEYSTORE_PRESENTE" = sim ] && [ "$assinado" = nao ]; then
+            echo "::error::a keystore foi fornecida mas o APK saiu sem assinatura; confira ANDROID_KEY_ALIAS e as senhas"
+            exit 1
+          fi
+
+          if [ "$assinado" = sim ]; then
+            destino="phoneauth-$v.apk"
+          else
+            destino="phoneauth-$v-SEM-ASSINATURA.apk"
+          fi
+
           cp "$origem" "$destino"
           sha256sum "$destino" | tee "$destino.sha256"
           ls -la "$destino"
+          echo "assinado=$assinado" >> "$GITHUB_OUTPUT"
 
       - name: Guardar o mapping do R8
         # Sem o mapping.txt desta build específica, todo stack trace vindo de
@@ -339,12 +374,30 @@ jobs:
             else
               echo "\`phoneauth-$VERSAO-SEM-ASSINATURA.apk\` — Android 10+ (minSdk 29)."
               echo
-              echo "> **Este APK não instala.** Saiu sem assinatura porque o"
-              echo "> repositório não tem a keystore configurada em secrets."
-              echo "> Para assiná-lo, defina \`ANDROID_KEYSTORE_BASE64\`,"
-              echo "> \`ANDROID_KEYSTORE_PASSWORD\`, \`ANDROID_KEY_ALIAS\` e"
-              echo "> \`ANDROID_KEY_PASSWORD\` e refaça a tag. Assinar localmente"
-              echo "> com \`apksigner\` também funciona."
+              echo "> **Este APK não instala.** Verificado com \`apksigner\`: não tem"
+              echo "> assinatura v1 nem v2/v3. O Android recusa no parse, com"
+              echo "> \`INSTALL_PARSE_FAILED_NO_CERTIFICATES\` — que a interface mostra"
+              echo "> como um genérico \"app não instalado\". Não é \"fontes"
+              echo "> desconhecidas\" e não é a versão do Android."
+              echo
+              echo "Para publicar um APK instalável, crie uma keystore **uma vez** e"
+              echo "guarde-a em secrets do repositório:"
+              echo
+              echo '```sh'
+              echo "keytool -genkeypair -v -keystore release.jks \\"
+              echo "  -alias phoneauth -keyalg RSA -keysize 4096 -validity 10000"
+              echo
+              echo "base64 -i release.jks | pbcopy   # vira ANDROID_KEYSTORE_BASE64"
+              echo '```'
+              echo
+              echo "Depois defina os quatro secrets em Settings → Secrets and"
+              echo "variables → Actions: \`ANDROID_KEYSTORE_BASE64\`,"
+              echo "\`ANDROID_KEYSTORE_PASSWORD\`, \`ANDROID_KEY_ALIAS\` (\`phoneauth\`)"
+              echo "e \`ANDROID_KEY_PASSWORD\`, e republique."
+              echo
+              echo "**Guarde o \`release.jks\` e as senhas.** A assinatura é a"
+              echo "identidade do app: perder a chave impede qualquer atualização"
+              echo "futura sobre as instalações existentes, e não há como recuperá-la."
             fi
             echo
             echo "## Verificação"

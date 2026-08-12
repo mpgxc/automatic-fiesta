@@ -28,7 +28,7 @@ porque é a única que pode estragar o `sudo`.
 Confirme:
 
 ```sh
-phoneauthctl status
+sudo phoneauthctl status
 ```
 
 ## 2. Parear o celular
@@ -45,7 +45,7 @@ Os dois lados exibem um código de 6 dígitos. **Confira que são iguais.** Se
 divergirem, cancele: alguém está no meio.
 
 ```sh
-phoneauthctl list
+sudo phoneauthctl list
 ```
 
 ## 3. Plugar no sudo
@@ -126,7 +126,7 @@ acordável, e os dois na mesma rede. É a limitação prática mais séria da v1
 dele. Veja:
 
 ```sh
-phoneauthctl status
+sudo phoneauthctl status
 tail -f /var/log/phoneauthd.log
 ```
 
