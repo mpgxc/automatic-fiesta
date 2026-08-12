@@ -95,13 +95,15 @@ O dia a dia, a referência de comandos, a configuração e o diagnóstico estão
 
 ## Documentação
 
+- [docs/android.md](docs/android.md) — **o app Android**: por que o APK
+  publicado não instala e como resolver, o requisito de biometria Classe 3
+  que faz o app não funcionar em alguns aparelhos, e o pareamento.
 - [docs/uso.md](docs/uso.md) — **como usar depois de instalado.** Comandos,
   `config.json`, os dois timeouts e por que a ordem entre eles importa,
   diagnóstico, e o que fazer em cada situação do dia a dia.
-- [docs/arquitetura-visual.html](docs/arquitetura-visual.html) — **comece aqui**
-  para entender o desenho.
-  Diagrama de arquitetura e comunicação, mais a organização do código de cada um
-  dos quatro projetos. Abra no navegador.
+- [docs/arquitetura-visual.html](docs/arquitetura-visual.html) — **comece aqui
+  para entender o desenho.** Diagrama de arquitetura e comunicação, mais a
+  organização do código de cada um dos quatro projetos. Abra no navegador.
 - [docs/protocolo.md](docs/protocolo.md) — o contrato entre os três lados: formato
   das mensagens, bytes exatos que são assinados, máquina de estados. **Leia isto
   antes de mexer em qualquer implementação**, porque os três lados precisam
