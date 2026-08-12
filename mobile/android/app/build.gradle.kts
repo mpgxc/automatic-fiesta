@@ -19,10 +19,35 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // A keystore vem do ambiente, nunca do repositório. Quando as variáveis não
+    // estão presentes — build local, fork, PR de terceiro — o bloco não é
+    // criado e o release sai *sem assinatura*, que é o comportamento honesto:
+    // melhor um APK que se recusa a instalar do que um assinado por uma chave
+    // descartável, porque a assinatura é a identidade do app e trocá-la impede
+    // qualquer atualização futura sobre a instalação existente.
+    //
+    // `takeIf { isNotBlank() }` não é decoração: o GitHub Actions define a
+    // variável como string VAZIA quando a expressão que a alimenta não resolve
+    // em nada, e getenv devolve "" — não null. Sem isto, o caminho "sem
+    // keystore" entraria no ramo de assinatura e morreria em `file("")`.
+    val keystorePath: String? = System.getenv("ANDROID_KEYSTORE_PATH")?.takeIf { it.isNotBlank() }
+
+    signingConfigs {
+        if (keystorePath != null) {
+            create("release") {
+                storeFile = file(keystorePath)
+                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 

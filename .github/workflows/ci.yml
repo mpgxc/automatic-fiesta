@@ -160,6 +160,16 @@ jobs:
       - name: Build do APK de debug
         run: gradle --project-dir mobile/android assembleDebug --no-daemon
 
+      - name: Build de release, para exercitar o R8
+        # O buildType de release tem isMinifyEnabled, e por muito tempo nada no
+        # CI o compilava — o proguard-rules.pro sequer existia, apesar de
+        # referenciado. Num app que vive de Keystore, CryptoObject e ML Kit,
+        # ofuscação quebrada aparece só no aparelho do usuário, na hora de
+        # aprovar um sudo. Sai sem assinatura aqui de propósito: o objetivo é
+        # provar que compila e encolhe, não produzir algo instalável — disso
+        # cuida o workflow de release, com a keystore dos secrets.
+        run: gradle --project-dir mobile/android assembleRelease --no-daemon
+
       - uses: actions/upload-artifact@v4
         if: success()
         with:

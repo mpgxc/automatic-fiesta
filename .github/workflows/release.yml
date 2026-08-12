@@ -1,0 +1,278 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+# `contents: write` é o que permite criar a release e anexar os arquivos. É a
+# única permissão elevada aqui, e só este workflow a tem — o CI e o Pages
+# seguem com o mínimo.
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  coerencia:
+    name: A tag bate com a versão declarada
+    runs-on: ubuntu-latest
+    outputs:
+      versao: ${{ steps.v.outputs.versao }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: v
+        # Publicar v0.2.0 com versionName 0.1.0 produz um APK que se anuncia
+        # como a versão anterior. O usuário instala, o "sobre" mostra outra
+        # coisa, e a confusão só aparece depois. Barato de impedir aqui.
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          declarada=$(grep -oE 'versionName = "[^"]+"' mobile/android/app/build.gradle.kts | cut -d'"' -f2)
+          echo "tag=$tag  build.gradle.kts=$declarada"
+          if [ "$tag" != "$declarada" ]; then
+            echo "::error file=mobile/android/app/build.gradle.kts::a tag v$tag não bate com versionName $declarada"
+            exit 1
+          fi
+          echo "versao=$tag" >> "$GITHUB_OUTPUT"
+
+  # ───────────────────────────────────────────────────────────────────────────
+  macos:
+    name: Daemon, CLI e módulo PAM
+    needs: coerencia
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build universal do daemon e da CLI
+        # arm64 + x86_64 no mesmo binário. Os runners são Apple Silicon; sem o
+        # `--arch` duplo o pacote sairia arm64-only e não rodaria em nenhum Mac
+        # Intel — que é justamente uma das máquinas citadas na landing como
+        # candidata (o Mac mini sem Touch ID).
+        run: swift build -c release --arch arm64 --arch x86_64 --package-path macos
+
+      - name: Build universal do módulo PAM
+        run: |
+          make -C macos/pam \
+            CFLAGS="-Wall -Wextra -Wconversion -Wshadow -Wpointer-arith -Wwrite-strings -Werror -O2 -std=gnu11 -fstack-protector-strong -arch arm64 -arch x86_64"
+
+      - name: Confirmar que tudo é universal
+        # `lipo` é a única prova real. Um `-arch` que o compilador ignorasse
+        # silenciosamente produziria um pacote que só falha na máquina do
+        # usuário Intel, e aí já é tarde.
+        run: |
+          falhou=0
+          for b in macos/.build/apple/Products/Release/phoneauthd \
+                   macos/.build/apple/Products/Release/phoneauthctl \
+                   macos/pam/pam_phoneauth.so; do
+            archs=$(lipo -archs "$b")
+            echo "$b: $archs"
+            case "$archs" in
+              *arm64*x86_64*|*x86_64*arm64*) ;;
+              *) echo "::error::$b não é universal ($archs)"; falhou=1 ;;
+            esac
+          done
+          exit $falhou
+
+      - name: Montar o tarball
+        # O layout do repositório é preservado de propósito: o install.sh
+        # procura `macos/.build/release/...`, e assim o mesmo script serve o
+        # checkout e o pacote. As fontes ficam de fora — é a ausência delas que
+        # faz o script pular a compilação.
+        run: |
+          v="${{ needs.coerencia.outputs.versao }}"
+          raiz="phoneauth-$v-macos"
+          mkdir -p "$raiz/macos/.build/release" "$raiz/macos/pam" "$raiz/macos/LaunchDaemon" "$raiz/scripts"
+
+          cp macos/.build/apple/Products/Release/phoneauthd   "$raiz/macos/.build/release/"
+          cp macos/.build/apple/Products/Release/phoneauthctl "$raiz/macos/.build/release/"
+          cp macos/pam/pam_phoneauth.so                       "$raiz/macos/pam/"
+          cp macos/LaunchDaemon/dev.phoneauth.daemon.plist    "$raiz/macos/LaunchDaemon/"
+          cp scripts/install.sh                               "$raiz/scripts/"
+          cp docs/instalacao.md docs/modelo-de-ameacas.md     "$raiz/"
+          chmod +x "$raiz/scripts/install.sh"
+
+          cat > "$raiz/LEIA-ME.txt" <<TXT
+          PhoneAuth $v — daemon macOS, CLI e módulo PAM
+
+              sudo ./scripts/install.sh
+
+          Binários universais (arm64 + x86_64), macOS 13 ou superior.
+
+          NÃO SÃO ASSINADOS NEM NOTARIZADOS. O macOS põe em quarentena o que
+          vem da internet; se o Gatekeeper reclamar, remova o atributo antes
+          de instalar:
+
+              xattr -dr com.apple.quarantine .
+
+          Faça isso só depois de conferir o que baixou. Este pacote contém um
+          módulo PAM, que roda como root dentro do sudo.
+
+          Depois de instalar faltam dois passos, nesta ordem: parear o celular
+          com 'sudo phoneauthctl pair' e só então plugar o módulo no
+          /etc/pam.d/sudo_local. O install.sh explica ambos ao terminar, e
+          instalacao.md tem o detalhe.
+
+          O módulo entra como 'sufficient', jamais 'required' — daemon fora do
+          ar ou celular sem bateria fazem o macOS voltar a pedir a senha.
+          TXT
+
+          tar -czf "$raiz.tar.gz" "$raiz"
+          shasum -a 256 "$raiz.tar.gz" | tee "$raiz.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: |
+            phoneauth-*-macos.tar.gz
+            phoneauth-*-macos.tar.gz.sha256
+          if-no-files-found: error
+
+  # ───────────────────────────────────────────────────────────────────────────
+  android:
+    name: APK de release
+    needs: coerencia
+    runs-on: ubuntu-latest
+    outputs:
+      assinado: ${{ steps.keystore.outputs.assinado }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - id: keystore
+        name: Preparar a keystore, se houver
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "path=$RUNNER_TEMP/release.jks" >> "$GITHUB_OUTPUT"
+            echo "assinado=sim" >> "$GITHUB_OUTPUT"
+            echo "keystore presente; o APK sairá assinado"
+          else
+            echo "assinado=nao" >> "$GITHUB_OUTPUT"
+            echo "::warning::sem ANDROID_KEYSTORE_BASE64; o APK sairá SEM assinatura e não instala"
+          fi
+
+      - name: Build de release
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ steps.keystore.outputs.path }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: gradle --project-dir mobile/android assembleRelease --no-daemon
+
+      - name: Renomear e somar
+        run: |
+          v="${{ needs.coerencia.outputs.versao }}"
+          origem=$(ls mobile/android/app/build/outputs/apk/release/*.apk | head -1)
+          case "$origem" in
+            *unsigned*) destino="phoneauth-$v-SEM-ASSINATURA.apk" ;;
+            *)          destino="phoneauth-$v.apk" ;;
+          esac
+          cp "$origem" "$destino"
+          sha256sum "$destino" | tee "$destino.sha256"
+          ls -la "$destino"
+
+      - name: Guardar o mapping do R8
+        # Sem o mapping.txt desta build específica, todo stack trace vindo de
+        # usuário é indecifrável. Ele não vai para a release por ser material
+        # de depuração, mas some junto com o runner se não for retido.
+        uses: actions/upload-artifact@v4
+        with:
+          name: r8-mapping
+          path: mobile/android/app/build/outputs/mapping/release/mapping.txt
+          if-no-files-found: warn
+          retention-days: 90
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: |
+            phoneauth-*.apk
+            phoneauth-*.apk.sha256
+          if-no-files-found: error
+
+  # ───────────────────────────────────────────────────────────────────────────
+  publicar:
+    name: Publicar a release
+    needs: [coerencia, macos, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: macos, path: dist }
+      - uses: actions/download-artifact@v4
+        with: { name: android, path: dist }
+
+      - name: Escrever as notas
+        env:
+          VERSAO: ${{ needs.coerencia.outputs.versao }}
+          ASSINADO: ${{ needs.android.outputs.assinado }}
+        run: |
+          ls -la dist
+          {
+            echo "Daemon macOS e app Android do PhoneAuth."
+            echo
+            echo "## macOS"
+            echo
+            echo '```'
+            echo "tar -xzf phoneauth-$VERSAO-macos.tar.gz"
+            echo "cd phoneauth-$VERSAO-macos"
+            echo "sudo ./scripts/install.sh"
+            echo '```'
+            echo
+            echo "Binários universais (arm64 + x86_64), macOS 13+."
+            echo "**Não assinados nem notarizados** — não há conta paga no Apple"
+            echo "Developer Program. O Gatekeeper vai barrar; \`xattr -dr"
+            echo "com.apple.quarantine .\` libera, e só faça isso depois de olhar"
+            echo "o que baixou: o pacote traz um módulo PAM que roda como root."
+            echo
+            echo "Instalar não ativa nada. O módulo só entra na sua pilha de"
+            echo "autenticação quando você editar \`/etc/pam.d/sudo_local\` à mão,"
+            echo "e ele entra como \`sufficient\`, jamais \`required\` — daemon fora"
+            echo "do ar faz o macOS voltar a pedir a senha, não te trancar fora."
+            echo
+            echo "## Android"
+            echo
+            if [ "$ASSINADO" = "sim" ]; then
+              echo "\`phoneauth-$VERSAO.apk\` — Android 10+ (minSdk 29)."
+            else
+              echo "\`phoneauth-$VERSAO-SEM-ASSINATURA.apk\` — Android 10+ (minSdk 29)."
+              echo
+              echo "> **Este APK não instala.** Saiu sem assinatura porque o"
+              echo "> repositório não tem a keystore configurada em secrets."
+              echo "> Para assiná-lo, defina \`ANDROID_KEYSTORE_BASE64\`,"
+              echo "> \`ANDROID_KEYSTORE_PASSWORD\`, \`ANDROID_KEY_ALIAS\` e"
+              echo "> \`ANDROID_KEY_PASSWORD\` e refaça a tag. Assinar localmente"
+              echo "> com \`apksigner\` também funciona."
+            fi
+            echo
+            echo "## Verificação"
+            echo
+            echo "Cada arquivo tem um \`.sha256\` ao lado."
+            echo
+            echo "## Estado do projeto"
+            echo
+            echo "Primeira versão publicada. Não cobre desbloqueio do FileVault"
+            echo "no boot nem os diálogos gráficos do SecurityAgent — só a pilha"
+            echo "PAM (sudo, su). Exige o celular na mesma rede local."
+          } > notas.md
+          cat notas.md
+
+      - name: Criar a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "PhoneAuth ${{ needs.coerencia.outputs.versao }}" \
+            --notes-file notas.md \
+            dist/*
