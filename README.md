@@ -62,9 +62,44 @@ impossível sem o dedo dele".
 > é o mesmo que funcionar: nada disto rodou ainda contra hardware real, e nenhuma
 > auditoria externa foi feita.
 
+## Instalar e usar
+
+Baixe o `.pkg` da [última release](https://github.com/mpgxc/automatic-fiesta/releases/latest)
+e abra. Ele é universal (arm64 + x86_64), pede macOS 13 ou mais novo, e **não é
+assinado nem notarizado** — o Gatekeeper vai barrar o duplo-clique, então ou
+remova a quarentena depois de olhar o que baixou, ou instale pelo terminal:
+
+```sh
+sudo installer -pkg phoneauth-*.pkg -target /
+```
+
+Instalar não ativa nada. Faltam dois passos, nesta ordem:
+
+```sh
+sudo phoneauthctl pair      # 1. escaneie o QR, confira o código de 6 dígitos
+                            # 2. edite /etc/pam.d/sudo_local — ver docs/instalacao.md
+sudo -k && sudo true        # 3. teste, com outra janela de terminal aberta
+```
+
+O passo 2 é manual de propósito e o passo 3 pede uma janela reserva com `sudo`
+válido: mexer em `/etc/pam.d` é a única etapa capaz de estragar a sua
+autenticação, e você deve estar olhando quando acontecer.
+
+**Não há aplicativo com janela.** O que roda é um daemon e a CLI
+`phoneauthctl` — a interface de barra de menu existe no repositório mas não é
+distribuída. E todo comando da CLI exige `sudo`, porque o socket de controle é
+`0600 root:wheel`: quem o alcança decide quem aprova os seus `sudo`.
+
+O dia a dia, a referência de comandos, a configuração e o diagnóstico estão em
+**[docs/uso.md](docs/uso.md)**.
+
 ## Documentação
 
-- [docs/arquitetura-visual.html](docs/arquitetura-visual.html) — **comece aqui.**
+- [docs/uso.md](docs/uso.md) — **como usar depois de instalado.** Comandos,
+  `config.json`, os dois timeouts e por que a ordem entre eles importa,
+  diagnóstico, e o que fazer em cada situação do dia a dia.
+- [docs/arquitetura-visual.html](docs/arquitetura-visual.html) — **comece aqui**
+  para entender o desenho.
   Diagrama de arquitetura e comunicação, mais a organização do código de cada um
   dos quatro projetos. Abra no navegador.
 - [docs/protocolo.md](docs/protocolo.md) — o contrato entre os três lados: formato

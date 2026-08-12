@@ -181,7 +181,7 @@ struct StatusPanel: View {
     private var emptyHint: String {
         switch client.status {
         case .daemonDown:
-            "O sudo continua funcionando com a senha, como sempre. Verifique com: phoneauthctl status"
+            "O sudo continua funcionando com a senha, como sempre. Verifique com: sudo phoneauthctl status"
         case .noDevices:
             "Pareie um celular para começar. Até lá, o sudo pede senha normalmente."
         default:
