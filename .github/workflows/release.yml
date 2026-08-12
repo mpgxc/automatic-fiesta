@@ -67,18 +67,31 @@ jobs:
       - name: Localizar os binários
         id: bin
         # O SwiftPM muda o diretório de saída conforme o build: `.build/release`
-        # para arch única, `.build/apple/Products/Release` para universal. Fixar
-        # um caminho é apostar num detalhe interno da ferramenta, e o preço do
-        # erro é uma tag queimada — release só roda uma vez por tag. Procurar é
-        # mais barato que adivinhar.
+        # para arquitetura única, `.build/apple/Products/Release` para
+        # universal. São só esses dois, então testá-los diretamente é mais
+        # honesto do que varrer a árvore.
+        #
+        # A primeira versão usava `find -perm -u+x` e falhou no runner: o find
+        # do macOS é BSD e não interpreta modo simbólico como o do GNU. `test
+        # -x` é POSIX e não tem esse tipo de divergência.
         run: |
-          dir=$(dirname "$(find macos/.build -type f -name phoneauthd -perm -u+x | head -1)")
-          if [ -z "$dir" ] || [ ! -f "$dir/phoneauthctl" ]; then
-            echo "::error::não achei phoneauthd/phoneauthctl sob macos/.build"
-            find macos/.build -maxdepth 4 -type d
+          dir=""
+          for candidato in macos/.build/apple/Products/Release macos/.build/release; do
+            if [ -x "$candidato/phoneauthd" ] && [ -x "$candidato/phoneauthctl" ]; then
+              dir="$candidato"; break
+            fi
+          done
+
+          if [ -z "$dir" ]; then
+            echo "::error::não achei phoneauthd e phoneauthctl executáveis sob macos/.build"
+            # Arquivos, não só diretórios: a versão anterior deste diagnóstico
+            # listava `-type d` e escondia exatamente o que era preciso ver.
+            find macos/.build -maxdepth 5 \( -name 'phoneauth*' -o -name Release \) -print
             exit 1
           fi
+
           echo "encontrados em $dir"
+          ls -la "$dir/phoneauthd" "$dir/phoneauthctl"
           echo "dir=$dir" >> "$GITHUB_OUTPUT"
 
       - name: Confirmar que tudo é universal
