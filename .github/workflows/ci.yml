@@ -218,6 +218,22 @@ jobs:
 
           exit $falhou
 
+      - name: Construir e conferir o tarball
+        # O .pkg não é o único caminho de instalação: quem prefere script baixa
+        # o tarball e roda `sudo ./scripts/install.sh`. Esse caminho quebrou na
+        # 0.1.4 sem ninguém notar, porque a montagem do tarball morava dentro do
+        # release.yml e só rodava depois da tag — quando já era tarde.
+        #
+        # A guarda de conteúdo está dentro do build-tarball.sh, e não aqui: ela
+        # deriva a lista de exigidos do próprio install.sh, então vale para os
+        # dois lugares que constroem o tarball e não pode ser esquecida em um
+        # deles.
+        run: |
+          versao="0.0.0-ci.${GITHUB_SHA::7}"
+          chmod +x macos/installer/build-tarball.sh
+          macos/installer/build-tarball.sh "$versao" "${{ steps.universal.outputs.dir }}" \
+            "phoneauth-$versao-macos.tar.gz"
+
       # ── FORA DE ESCOPO ────────────────────────────────────────────────────
       # App iOS. Custa pouco — divide este runner, que já está de pé — mas está
       # fora do escopo atual. Para religar, descomente:

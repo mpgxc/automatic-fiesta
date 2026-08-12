@@ -195,50 +195,16 @@ jobs:
           exit $falhou
 
       - name: Montar o tarball
-        # O layout do repositório é preservado de propósito: o install.sh
-        # procura `macos/.build/release/...`, e assim o mesmo script serve o
-        # checkout e o pacote. As fontes ficam de fora — é a ausência delas que
-        # faz o script pular a compilação.
+        # Mesmo script que o CI roda a cada push — como o .pkg. A 0.1.4 saiu com
+        # o tarball quebrado justamente porque esta montagem era um punhado de
+        # `cp` aqui dentro: nunca passava pelo CI, e a man page que entrou na
+        # lista de exigidos do install.sh não entrou na cópia.
         run: |
           v="${{ needs.versao.outputs.versao }}"
-          raiz="phoneauth-$v-macos"
-          mkdir -p "$raiz/macos/.build/release" "$raiz/macos/pam" "$raiz/macos/LaunchDaemon" "$raiz/scripts"
-
-          cp "${{ steps.bin.outputs.dir }}/phoneauthd"   "$raiz/macos/.build/release/"
-          cp "${{ steps.bin.outputs.dir }}/phoneauthctl" "$raiz/macos/.build/release/"
-          cp macos/pam/pam_phoneauth.so                  "$raiz/macos/pam/"
-          cp macos/LaunchDaemon/dev.phoneauth.daemon.plist    "$raiz/macos/LaunchDaemon/"
-          cp scripts/install.sh                               "$raiz/scripts/"
-          cp docs/instalacao.md docs/modelo-de-ameacas.md     "$raiz/"
-          chmod +x "$raiz/scripts/install.sh"
-
-          cat > "$raiz/LEIA-ME.txt" <<TXT
-          PhoneAuth $v — daemon macOS, CLI e módulo PAM
-
-              sudo ./scripts/install.sh
-
-          Binários universais (arm64 + x86_64), macOS 13 ou superior.
-
-          NÃO SÃO ASSINADOS NEM NOTARIZADOS. O macOS põe em quarentena o que
-          vem da internet; se o Gatekeeper reclamar, remova o atributo antes
-          de instalar:
-
-              xattr -dr com.apple.quarantine .
-
-          Faça isso só depois de conferir o que baixou. Este pacote contém um
-          módulo PAM, que roda como root dentro do sudo.
-
-          Depois de instalar faltam dois passos, nesta ordem: parear o celular
-          com 'sudo phoneauthctl pair' e só então plugar o módulo no
-          /etc/pam.d/sudo_local. O install.sh explica ambos ao terminar, e
-          instalacao.md tem o detalhe.
-
-          O módulo entra como 'sufficient', jamais 'required' — daemon fora do
-          ar ou celular sem bateria fazem o macOS voltar a pedir a senha.
-          TXT
-
-          tar -czf "$raiz.tar.gz" "$raiz"
-          shasum -a 256 "$raiz.tar.gz" | tee "$raiz.tar.gz.sha256"
+          chmod +x macos/installer/build-tarball.sh
+          macos/installer/build-tarball.sh "$v" "${{ steps.bin.outputs.dir }}" \
+            "phoneauth-$v-macos.tar.gz"
+          shasum -a 256 "phoneauth-$v-macos.tar.gz" | tee "phoneauth-$v-macos.tar.gz.sha256"
 
       - name: Construir o instalador .pkg
         # Mesmo script que o CI roda a cada push, então o caminho de
