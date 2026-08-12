@@ -14,8 +14,12 @@ android {
         // fallback para o método depreciado abaixo disso. StrongBox exige 28+.
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // versionCode é o que o Android compara para decidir se um APK é
+        // atualização: precisa subir a cada publicação, mesmo quando a mudança
+        // é só de pipeline. Um APK com versionCode igual ou menor é recusado
+        // sobre a instalação existente, sem explicação útil ao usuário.
+        versionCode = 2
+        versionName = "0.1.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

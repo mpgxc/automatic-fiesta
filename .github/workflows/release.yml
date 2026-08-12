@@ -3,6 +3,17 @@ name: Release
 on:
   push:
     tags: ['v*']
+  # Publicar sem precisar criar a tag antes. A tag passa a nascer do próprio
+  # workflow, via `gh release create`, com o token que já tem `contents:
+  # write` — o que também elimina a classe de erro que já nos custou um
+  # release: tag apontando para um commit anterior à correção, e a única saída
+  # sendo apagá-la e recriá-la.
+  workflow_dispatch:
+    inputs:
+      versao:
+        description: 'Versão a publicar, sem o "v" (ex.: 0.1.1). Precisa bater com o versionName do build.gradle.kts.'
+        required: true
+        type: string
 
 # `contents: write` é o que permite criar a release e anexar os arquivos. É a
 # única permissão elevada aqui, e só este workflow a tem — o CI e o Pages
@@ -17,26 +28,40 @@ concurrency:
 jobs:
   # ───────────────────────────────────────────────────────────────────────────
   coerencia:
-    name: A tag bate com a versão declarada
+    name: A versão bate com a declarada
     runs-on: ubuntu-latest
     outputs:
       versao: ${{ steps.v.outputs.versao }}
+      tag: ${{ steps.v.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
       - id: v
-        # Publicar v0.2.0 com versionName 0.1.0 produz um APK que se anuncia
+        # Publicar 0.2.0 com versionName 0.1.0 produz um APK que se anuncia
         # como a versão anterior. O usuário instala, o "sobre" mostra outra
         # coisa, e a confusão só aparece depois. Barato de impedir aqui.
+        env:
+          ENTRADA: ${{ inputs.versao }}
         run: |
-          tag="${GITHUB_REF_NAME#v}"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            versao="$ENTRADA"
+          else
+            versao="$GITHUB_REF_NAME"
+          fi
+          # Tolera o "v" digitado no campo: quem preenche à mão escreve
+          # "v0.1.1" com a mesma naturalidade que "0.1.1", e recusar por isso
+          # seria rigor sem propósito.
+          versao="${versao#v}"
+
           declarada=$(grep -oE 'versionName = "[^"]+"' mobile/android/app/build.gradle.kts | cut -d'"' -f2)
-          echo "tag=$tag  build.gradle.kts=$declarada"
-          if [ "$tag" != "$declarada" ]; then
-            echo "::error file=mobile/android/app/build.gradle.kts::a tag v$tag não bate com versionName $declarada"
+          echo "pedida=$versao  build.gradle.kts=$declarada"
+          if [ "$versao" != "$declarada" ]; then
+            echo "::error file=mobile/android/app/build.gradle.kts::versão pedida ($versao) não bate com versionName ($declarada)"
             exit 1
           fi
-          echo "versao=$tag" >> "$GITHUB_OUTPUT"
+
+          echo "versao=$versao"  >> "$GITHUB_OUTPUT"
+          echo "tag=v$versao"    >> "$GITHUB_OUTPUT"
 
   # ───────────────────────────────────────────────────────────────────────────
   macos:
@@ -331,23 +356,38 @@ jobs:
           cat notas.md
 
       - name: Criar ou completar a release
-        # Idempotente porque a tag pode nascer de dois jeitos. Pela linha de
-        # comando, `git push origin v0.1.0`, e aí a release ainda não existe.
-        # Ou pela interface do GitHub, onde "Draft a new release" cria a tag e
-        # a release no mesmo ato — e aí um `gh release create` falharia com
-        # "already exists", derrubando o job depois de todo o build, sem anexar
-        # nada. As duas rotas terminam no mesmo lugar.
+        # Três rotas chegam aqui e todas terminam no mesmo lugar:
+        #
+        #   · workflow_dispatch — não existe tag nem release; `gh release
+        #     create --target` cria as duas, apontando para o commit que este
+        #     run realmente construiu.
+        #   · push de tag — a tag existe, a release não.
+        #   · "Draft a new release" na interface — tag e release já existem, e
+        #     um `create` cru falharia com "already exists" depois de todo o
+        #     build, deixando a release publicada e vazia.
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.coerencia.outputs.tag }}
           TITULO: PhoneAuth ${{ needs.coerencia.outputs.versao }}
         run: |
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "a release já existe; completando com as notas e os arquivos"
-            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $TAG já existe; completando com as notas e os arquivos"
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
               --title "$TITULO" --notes-file notas.md
-            gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-              --clobber dist/*
-          else
-            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-              --title "$TITULO" --notes-file notas.md dist/*
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber dist/*
+            exit 0
           fi
+
+          # `--target` só quando a tag ainda não existe. Passá-lo sobre uma tag
+          # existente pediria para movê-la, e mover tag publicada é pior do que
+          # o problema que resolveria.
+          alvo=()
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "tag $TAG já existe; criando a release sobre ela"
+          else
+            echo "criando tag $TAG em $GITHUB_SHA"
+            alvo=(--target "$GITHUB_SHA")
+          fi
+
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --title "$TITULO" --notes-file notas.md "${alvo[@]}" dist/*
