@@ -54,9 +54,32 @@ jobs:
         run: swift build -c release --arch arm64 --arch x86_64 --package-path macos
 
       - name: Build universal do módulo PAM
+        # As flags repetem exatamente o default do Makefile mais os dois `-arch`
+        # — `CFLAGS` na linha de comando sobrescreve o `?=` inteiro, então não
+        # dá para só acrescentar. Sem `-Werror` de propósito: quem faz cumprir
+        # zero-warning é o CI, com gcc, a cada push. Repeti-lo aqui com clang
+        # significaria descobrir uma divergência de compilador na hora de
+        # publicar, e uma tag não se reaproveita.
         run: |
           make -C macos/pam \
-            CFLAGS="-Wall -Wextra -Wconversion -Wshadow -Wpointer-arith -Wwrite-strings -Werror -O2 -std=gnu11 -fstack-protector-strong -arch arm64 -arch x86_64"
+            CFLAGS="-Wall -Wextra -Wconversion -Wshadow -Wpointer-arith -Wwrite-strings -O2 -std=gnu11 -fstack-protector-strong -arch arm64 -arch x86_64"
+
+      - name: Localizar os binários
+        id: bin
+        # O SwiftPM muda o diretório de saída conforme o build: `.build/release`
+        # para arch única, `.build/apple/Products/Release` para universal. Fixar
+        # um caminho é apostar num detalhe interno da ferramenta, e o preço do
+        # erro é uma tag queimada — release só roda uma vez por tag. Procurar é
+        # mais barato que adivinhar.
+        run: |
+          dir=$(dirname "$(find macos/.build -type f -name phoneauthd -perm -u+x | head -1)")
+          if [ -z "$dir" ] || [ ! -f "$dir/phoneauthctl" ]; then
+            echo "::error::não achei phoneauthd/phoneauthctl sob macos/.build"
+            find macos/.build -maxdepth 4 -type d
+            exit 1
+          fi
+          echo "encontrados em $dir"
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
 
       - name: Confirmar que tudo é universal
         # `lipo` é a única prova real. Um `-arch` que o compilador ignorasse
@@ -64,8 +87,8 @@ jobs:
         # usuário Intel, e aí já é tarde.
         run: |
           falhou=0
-          for b in macos/.build/apple/Products/Release/phoneauthd \
-                   macos/.build/apple/Products/Release/phoneauthctl \
+          for b in "${{ steps.bin.outputs.dir }}/phoneauthd" \
+                   "${{ steps.bin.outputs.dir }}/phoneauthctl" \
                    macos/pam/pam_phoneauth.so; do
             archs=$(lipo -archs "$b")
             echo "$b: $archs"
@@ -86,9 +109,9 @@ jobs:
           raiz="phoneauth-$v-macos"
           mkdir -p "$raiz/macos/.build/release" "$raiz/macos/pam" "$raiz/macos/LaunchDaemon" "$raiz/scripts"
 
-          cp macos/.build/apple/Products/Release/phoneauthd   "$raiz/macos/.build/release/"
-          cp macos/.build/apple/Products/Release/phoneauthctl "$raiz/macos/.build/release/"
-          cp macos/pam/pam_phoneauth.so                       "$raiz/macos/pam/"
+          cp "${{ steps.bin.outputs.dir }}/phoneauthd"   "$raiz/macos/.build/release/"
+          cp "${{ steps.bin.outputs.dir }}/phoneauthctl" "$raiz/macos/.build/release/"
+          cp macos/pam/pam_phoneauth.so                  "$raiz/macos/pam/"
           cp macos/LaunchDaemon/dev.phoneauth.daemon.plist    "$raiz/macos/LaunchDaemon/"
           cp scripts/install.sh                               "$raiz/scripts/"
           cp docs/instalacao.md docs/modelo-de-ameacas.md     "$raiz/"
