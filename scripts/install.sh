@@ -11,6 +11,7 @@ set -euo pipefail
 STATE_DIR="/Library/Application Support/PhoneAuth"
 PAM_DIR="/usr/local/lib/pam"
 BIN_DIR="/usr/local/bin"
+MAN_DIR="/usr/local/share/man/man1"
 PLIST="/Library/LaunchDaemons/dev.phoneauth.daemon.plist"
 LABEL="dev.phoneauth.daemon"
 
@@ -47,7 +48,8 @@ fi
 for artefato in macos/.build/release/phoneauthd \
                 macos/.build/release/phoneauthctl \
                 macos/pam/pam_phoneauth.so \
-                macos/LaunchDaemon/dev.phoneauth.daemon.plist; do
+                macos/LaunchDaemon/dev.phoneauth.daemon.plist \
+                macos/man/phoneauthctl.1; do
     if [[ ! -f "$artefato" ]]; then
         echo "erro: $artefato não existe — pacote incompleto ou build falhou" >&2
         exit 1
@@ -102,6 +104,10 @@ install -o root -g wheel -m 0755 macos/.build/release/phoneauthctl "$BIN_DIR/pho
 echo "==> Instalando o módulo PAM em $PAM_DIR"
 install -d -o root -g wheel -m 0755 "$PAM_DIR"
 install -o root -g wheel -m 0444 macos/pam/pam_phoneauth.so "$PAM_DIR/pam_phoneauth.so"
+
+echo "==> Instalando a man page"
+install -d -o root -g wheel -m 0755 "$MAN_DIR"
+install -o root -g wheel -m 0644 macos/man/phoneauthctl.1 "$MAN_DIR/phoneauthctl.1"
 
 echo "==> Instalando o LaunchDaemon"
 install -o root -g wheel -m 0644 macos/LaunchDaemon/dev.phoneauth.daemon.plist "$PLIST"

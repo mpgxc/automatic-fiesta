@@ -27,7 +27,8 @@ IDENT="dev.phoneauth"
 
 for exigido in "$BINDIR/phoneauthd" "$BINDIR/phoneauthctl" \
                "$RAIZ/macos/pam/pam_phoneauth.so" \
-               "$RAIZ/macos/LaunchDaemon/dev.phoneauth.daemon.plist"; do
+               "$RAIZ/macos/LaunchDaemon/dev.phoneauth.daemon.plist" \
+               "$RAIZ/macos/man/phoneauthctl.1"; do
     if [[ ! -f "$exigido" ]]; then
         echo "erro: $exigido não existe" >&2
         exit 1
@@ -42,7 +43,8 @@ trap 'rm -rf "$TMP"' EXIT
 # Os caminhos abaixo do stage viram caminhos absolutos no disco de destino, já
 # que a instalação é em `/`.
 STAGE="$TMP/stage"
-install -d "$STAGE/usr/local/bin" "$STAGE/usr/local/lib/pam" "$STAGE/Library/LaunchDaemons"
+install -d "$STAGE/usr/local/bin" "$STAGE/usr/local/lib/pam" \
+            "$STAGE/Library/LaunchDaemons" "$STAGE/usr/local/share/man/man1"
 
 install -m 0755 "$BINDIR/phoneauthd"   "$STAGE/usr/local/bin/phoneauthd"
 install -m 0755 "$BINDIR/phoneauthctl" "$STAGE/usr/local/bin/phoneauthctl"
@@ -53,6 +55,11 @@ install -m 0755 "$BINDIR/phoneauthctl" "$STAGE/usr/local/bin/phoneauthctl"
 install -m 0444 "$RAIZ/macos/pam/pam_phoneauth.so" "$STAGE/usr/local/lib/pam/pam_phoneauth.so"
 install -m 0644 "$RAIZ/macos/LaunchDaemon/dev.phoneauth.daemon.plist" \
                 "$STAGE/Library/LaunchDaemons/dev.phoneauth.daemon.plist"
+
+# Depois de instalar não havia documento nenhum na máquina. `man phoneauthctl`
+# é o que alguém tenta primeiro, e é onde a resposta deve estar.
+install -m 0644 "$RAIZ/macos/man/phoneauthctl.1" \
+                "$STAGE/usr/local/share/man/man1/phoneauthctl.1"
 
 # ── Componente ─────────────────────────────────────────────────────────────
 #
