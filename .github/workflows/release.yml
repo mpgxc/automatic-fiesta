@@ -290,12 +290,24 @@ jobs:
           } > notas.md
           cat notas.md
 
-      - name: Criar a release
+      - name: Criar ou completar a release
+        # Idempotente porque a tag pode nascer de dois jeitos. Pela linha de
+        # comando, `git push origin v0.1.0`, e aí a release ainda não existe.
+        # Ou pela interface do GitHub, onde "Draft a new release" cria a tag e
+        # a release no mesmo ato — e aí um `gh release create` falharia com
+        # "already exists", derrubando o job depois de todo o build, sem anexar
+        # nada. As duas rotas terminam no mesmo lugar.
         env:
           GH_TOKEN: ${{ github.token }}
+          TITULO: PhoneAuth ${{ needs.coerencia.outputs.versao }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "PhoneAuth ${{ needs.coerencia.outputs.versao }}" \
-            --notes-file notas.md \
-            dist/*
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "a release já existe; completando com as notas e os arquivos"
+            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --title "$TITULO" --notes-file notas.md
+            gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --clobber dist/*
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --title "$TITULO" --notes-file notas.md dist/*
+          fi
