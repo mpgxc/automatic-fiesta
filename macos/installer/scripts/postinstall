@@ -1,0 +1,57 @@
+#!/bin/bash
+#
+# Roda como root, depois que o instalador copiou os arquivos.
+#
+# Faz o que a cópia de arquivos não consegue: cria o diretório de estado, gera a
+# identidade TLS na máquina do usuário e sobe o daemon. É o mesmo trabalho do
+# scripts/install.sh — e é de propósito que a identidade nasça aqui, e não venha
+# no pacote: uma chave privada embarcada no instalador seria a mesma chave em
+# toda instalação do mundo, o que anularia o pinning inteiro.
+
+set -euo pipefail
+
+STATE_DIR="/Library/Application Support/PhoneAuth"
+LABEL="dev.phoneauth.daemon"
+PLIST="/Library/LaunchDaemons/$LABEL.plist"
+
+install -d -o root -g wheel -m 0700 "$STATE_DIR"
+
+if [[ -f "$STATE_DIR/identity.p12" ]]; then
+    echo "identidade TLS já existe; preservando"
+else
+    echo "gerando identidade TLS P-256"
+    PASSPHRASE="$(openssl rand -base64 32)"
+    TMP="$(mktemp -d)"
+    trap 'rm -rf "$TMP"' EXIT
+
+    # Auto-assinado de propósito: o celular fixa o hash do SPKI no pareamento,
+    # então não há CA nem cadeia a validar. A confiança vem do que foi visto no
+    # QR e de nada mais.
+    openssl ecparam -name prime256v1 -genkey -noout -out "$TMP/key.pem" 2>/dev/null
+    openssl req -new -x509 -key "$TMP/key.pem" -out "$TMP/cert.pem" \
+        -days 3650 -sha256 \
+        -subj "/CN=phoneauthd/O=PhoneAuth" \
+        -addext "subjectAltName=DNS:$(hostname -s).local,DNS:localhost" 2>/dev/null
+
+    openssl pkcs12 -export -out "$TMP/identity.p12" \
+        -inkey "$TMP/key.pem" -in "$TMP/cert.pem" \
+        -passout "pass:$PASSPHRASE" 2>/dev/null
+
+    install -o root -g wheel -m 0600 "$TMP/identity.p12" "$STATE_DIR/identity.p12"
+    printf '%s' "$PASSPHRASE" > "$TMP/identity.pass"
+    install -o root -g wheel -m 0600 "$TMP/identity.pass" "$STATE_DIR/identity.pass"
+
+    rm -rf "$TMP"
+    trap - EXIT
+fi
+
+# `bootout` antes para o caso de atualização sobre uma instalação viva. O `||
+# true` cobre a primeira instalação, em que não há nada para derrubar.
+launchctl bootout "system/$LABEL" 2>/dev/null || true
+
+if ! launchctl bootstrap system "$PLIST"; then
+    echo "erro: launchctl bootstrap falhou para $LABEL" >&2
+    exit 1
+fi
+
+exit 0

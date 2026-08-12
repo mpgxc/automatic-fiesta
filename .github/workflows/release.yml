@@ -158,12 +158,26 @@ jobs:
           tar -czf "$raiz.tar.gz" "$raiz"
           shasum -a 256 "$raiz.tar.gz" | tee "$raiz.tar.gz.sha256"
 
+      - name: Construir o instalador .pkg
+        # Mesmo script que o CI roda a cada push, então o caminho de
+        # empacotamento chega aqui já exercitado — não é código que só acorda
+        # na hora de publicar.
+        env:
+          MACOS_INSTALLER_IDENTITY: ${{ secrets.MACOS_INSTALLER_IDENTITY }}
+        run: |
+          v="${{ needs.coerencia.outputs.versao }}"
+          chmod +x macos/installer/build-pkg.sh macos/installer/scripts/postinstall
+          macos/installer/build-pkg.sh "$v" "${{ steps.bin.outputs.dir }}" "phoneauth-$v.pkg"
+          shasum -a 256 "phoneauth-$v.pkg" | tee "phoneauth-$v.pkg.sha256"
+
       - uses: actions/upload-artifact@v4
         with:
           name: macos
           path: |
             phoneauth-*-macos.tar.gz
             phoneauth-*-macos.tar.gz.sha256
+            phoneauth-*.pkg
+            phoneauth-*.pkg.sha256
           if-no-files-found: error
 
   # ───────────────────────────────────────────────────────────────────────────
@@ -259,11 +273,24 @@ jobs:
             echo
             echo "## macOS"
             echo
+            echo "**\`phoneauth-$VERSAO.pkg\`** — instalador. Duplo-clique, ou:"
+            echo
             echo '```'
-            echo "tar -xzf phoneauth-$VERSAO-macos.tar.gz"
-            echo "cd phoneauth-$VERSAO-macos"
-            echo "sudo ./scripts/install.sh"
+            echo "sudo installer -pkg phoneauth-$VERSAO.pkg -target /"
             echo '```'
+            echo
+            echo "Copia os binários, o módulo PAM e o LaunchDaemon, gera a"
+            echo "identidade TLS **na sua máquina** e sobe o daemon. A chave"
+            echo "privada nunca vem no pacote — se viesse, seria a mesma chave em"
+            echo "toda instalação do mundo e o pinning não valeria nada."
+            echo
+            echo "Ele **não** toca em \`/etc/pam.d\`. Plugar o módulo no \`sudo\` é"
+            echo "a única etapa capaz de estragar sua autenticação, e você deve"
+            echo "estar olhando quando acontecer — a tela final do instalador"
+            echo "explica os dois passos que faltam."
+            echo
+            echo "\`phoneauth-$VERSAO-macos.tar.gz\` é a alternativa para quem"
+            echo "prefere script a instalador gráfico: \`sudo ./scripts/install.sh\`."
             echo
             echo "Binários universais (arm64 + x86_64), macOS 13+."
             echo "**Não assinados nem notarizados** — não há conta paga no Apple"

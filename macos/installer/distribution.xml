@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>PhoneAuth</title>
+    <organization>dev.phoneauth</organization>
+
+    <!-- hostArchitectures com as duas: sem isto o instalador se recusa a rodar
+         em Intel, mesmo o payload sendo universal. -->
+    <options customize="never" require-scripts="true" hostArchitectures="arm64,x86_64"/>
+
+    <!-- O daemon tem alvo macOS 13. Barrar aqui é melhor do que instalar e
+         falhar ao subir, com o usuário sem saber por quê. -->
+    <volume-check>
+        <allowed-os-versions>
+            <os-version min="13.0"/>
+        </allowed-os-versions>
+    </volume-check>
+
+    <!-- A tela final carrega instrução de segurança, não cortesia: instalar não
+         ativa nada, e é ali que o usuário descobre os dois passos que faltam. -->
+    <conclusion file="conclusion.html" mime-type="text/html"/>
+
+    <choices-outline>
+        <line choice="default"/>
+    </choices-outline>
+
+    <choice id="default" title="PhoneAuth">
+        <pkg-ref id="dev.phoneauth"/>
+    </choice>
+
+    <pkg-ref id="dev.phoneauth" version="__VERSAO__" onConclusion="none">componente.pkg</pkg-ref>
+</installer-gui-script>

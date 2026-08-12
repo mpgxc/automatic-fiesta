@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { font: 13px -apple-system, sans-serif; color: #1d1d1f; margin: 0; line-height: 1.5; }
+  h2   { font-size: 15px; margin: 0 0 10px; }
+  h3   { font-size: 13px; margin: 18px 0 6px; }
+  code { font: 12px ui-monospace, Menlo, monospace; background: #f2f2f7;
+         padding: 1px 5px; border-radius: 4px; }
+  pre  { font: 12px ui-monospace, Menlo, monospace; background: #f2f2f7;
+         padding: 9px 11px; border-radius: 6px; overflow-x: auto; margin: 6px 0; }
+  .aviso { border-left: 3px solid #ff9f0a; padding: 8px 12px; margin: 16px 0;
+           background: #fff8ec; }
+  .perigo { border-left: 3px solid #ff453a; padding: 8px 12px; margin: 16px 0;
+            background: #fff1f0; }
+  p { margin: 8px 0; }
+</style>
+</head>
+<body>
+
+<h2>Instalado — mas ainda não ativo.</h2>
+
+<p>O daemon está rodando e o módulo PAM está em <code>/usr/local/lib/pam</code>.
+Faltam dois passos, <b>nesta ordem</b>.</p>
+
+<h3>1. Pareie o celular</h3>
+<pre>sudo phoneauthctl pair</pre>
+<p>Um QR code aparece no terminal. Escaneie com o app PhoneAuth e confirme que o
+número mostrado no Mac é o mesmo do celular.</p>
+
+<h3>2. Só depois de parear, plugue o módulo no sudo</h3>
+<p>Crie ou edite <code>/etc/pam.d/sudo_local</code> e ponha esta linha
+<b>antes</b> das outras:</p>
+<pre>auth  sufficient  /usr/local/lib/pam/pam_phoneauth.so  timeout=30</pre>
+<p><code>sudo_local</code> é um drop-in que sobrevive a atualizações do macOS.
+Editar <code>/etc/pam.d/sudo</code> direto seria desfeito no próximo update.</p>
+
+<div class="perigo">
+<b>Antes de fechar o terminal que você usou.</b><br>
+Abra <b>outra</b> janela e rode <code>sudo true</code>. Confirme que funciona.
+Se algo der errado, a primeira janela ainda tem sudo válido e conserta com
+<code>sudo rm /etc/pam.d/sudo_local</code>.
+</div>
+
+<div class="aviso">
+O módulo entra como <code>sufficient</code>, <b>jamais</b>
+<code>required</code>. Daemon fora do ar, celular sem bateria ou bug no código
+fazem o macOS simplesmente voltar a pedir a senha — ele nunca tranca você fora
+da máquina. Um erro de digitação no <code>sudo_local</code>, porém, é outra
+história: daí a janela reserva acima.
+</div>
+
+<h3>O que isto não cobre</h3>
+<p>Não desbloqueia o FileVault no boot (ali ainda não existe rede nem daemon) e
+não cobre os diálogos gráficos do SecurityAgent — só a pilha PAM, como
+<code>sudo</code> e <code>su</code>. O celular precisa estar na mesma rede
+local.</p>
+
+<h3>Para desinstalar</h3>
+<pre>sudo rm /etc/pam.d/sudo_local
+sudo launchctl bootout system/dev.phoneauth.daemon
+sudo rm /usr/local/bin/phoneauth{d,ctl}
+sudo rm /usr/local/lib/pam/pam_phoneauth.so
+sudo rm /Library/LaunchDaemons/dev.phoneauth.daemon.plist
+sudo rm -rf "/Library/Application Support/PhoneAuth"</pre>
+
+</body>
+</html>

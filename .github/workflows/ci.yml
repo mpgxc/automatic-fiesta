@@ -108,6 +108,88 @@ jobs:
           make
           file pam_phoneauth.so
 
+      # ── Instalador ────────────────────────────────────────────────────────
+      #
+      # O .pkg é construído a cada push, não só nas tags. O primeiro release
+      # falhou num passo de empacotamento que nada exercitava — descobrir isso
+      # com a tag já criada custa uma tag queimada, porque tag não se
+      # reaproveita. Aqui custa um build vermelho.
+      - name: Build universal para o instalador
+        run: |
+          swift build -c release --arch arm64 --arch x86_64 --package-path macos
+          make -C macos/pam clean
+          make -C macos/pam \
+            CFLAGS="-Wall -Wextra -Wconversion -Wshadow -Wpointer-arith -Wwrite-strings -O2 -std=gnu11 -fstack-protector-strong -arch arm64 -arch x86_64"
+
+      - name: Confirmar que é universal
+        id: universal
+        run: |
+          dir=""
+          for candidato in macos/.build/apple/Products/Release macos/.build/release; do
+            if [ -x "$candidato/phoneauthd" ] && [ -x "$candidato/phoneauthctl" ]; then
+              dir="$candidato"; break
+            fi
+          done
+          if [ -z "$dir" ]; then
+            echo "::error::não achei os binários sob macos/.build"
+            find macos/.build -maxdepth 5 \( -name 'phoneauth*' -o -name Release \) -print
+            exit 1
+          fi
+          falhou=0
+          for b in "$dir/phoneauthd" "$dir/phoneauthctl" macos/pam/pam_phoneauth.so; do
+            archs=$(lipo -archs "$b")
+            echo "$b: $archs"
+            case "$archs" in
+              *arm64*x86_64*|*x86_64*arm64*) ;;
+              *) echo "::error::$b não é universal ($archs)"; falhou=1 ;;
+            esac
+          done
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+          exit $falhou
+
+      - name: Construir o .pkg
+        # Versão derivada do commit: este pacote é de verificação, não de
+        # distribuição, e um número de versão real aqui faria um artefato de CI
+        # se passar por release.
+        run: |
+          versao="0.0.0-ci.${GITHUB_SHA::7}"
+          chmod +x macos/installer/build-pkg.sh macos/installer/scripts/postinstall
+          macos/installer/build-pkg.sh "$versao" "${{ steps.universal.outputs.dir }}" \
+            "phoneauth-$versao.pkg"
+
+      - name: Conferir o conteúdo do .pkg
+        # `pkgbuild` aceita quase tudo em silêncio. Payload vazio, caminho de
+        # instalação errado ou postinstall faltando produzem um .pkg
+        # perfeitamente válido que não instala nada — e isso só apareceria na
+        # máquina de quem baixou.
+        #
+        # `--expand-full` e não `--payload-files`: o segundo opera sobre pacote
+        # de componente, e o que sai do productbuild é um product archive.
+        run: |
+          pkg=$(ls phoneauth-*.pkg)
+          rm -rf /tmp/exp
+          pkgutil --expand-full "$pkg" /tmp/exp
+          find /tmp/exp -type f | sed 's|^/tmp/exp/||' | sort
+
+          falhou=0
+          for exigido in usr/local/bin/phoneauthd \
+                         usr/local/bin/phoneauthctl \
+                         usr/local/lib/pam/pam_phoneauth.so \
+                         Library/LaunchDaemons/dev.phoneauth.daemon.plist; do
+            if ! find /tmp/exp -path "*/Payload/$exigido" | grep -q .; then
+              echo "::error::$exigido ausente do payload do .pkg"; falhou=1
+            fi
+          done
+
+          # Sem o postinstall o pacote copia arquivos e para por aí: não gera a
+          # identidade TLS nem sobe o daemon, e o usuário fica com uma
+          # instalação silenciosamente inerte.
+          if ! find /tmp/exp -path '*/Scripts/postinstall' | grep -q .; then
+            echo "::error::postinstall ausente do .pkg"; falhou=1
+          fi
+
+          exit $falhou
+
       # ── FORA DE ESCOPO ────────────────────────────────────────────────────
       # App iOS. Custa pouco — divide este runner, que já está de pé — mas está
       # fora do escopo atual. Para religar, descomente:
@@ -123,10 +205,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: phoneauthd-${{ github.sha }}
+          name: phoneauth-macos-${{ github.sha }}
           path: |
-            macos/.build/release/phoneauthd
-            macos/.build/release/phoneauthctl
+            phoneauth-*.pkg
             macos/pam/pam_phoneauth.so
           if-no-files-found: error
           retention-days: 14
@@ -174,7 +255,14 @@ jobs:
         if: success()
         with:
           name: phoneauth-android-${{ github.sha }}
-          path: mobile/android/app/build/outputs/apk/debug/*.apk
+          # O de release sai como `app-release-unsigned.apk` e o nome é o
+          # próprio aviso: sem keystore ele não instala. Assinar a cada push
+          # exigiria a chave de release exposta em todo build, e ela é a
+          # identidade do app — isso é trabalho do workflow de release, uma vez
+          # por versão. Aqui ele serve para provar que o R8 não quebrou.
+          path: |
+            mobile/android/app/build/outputs/apk/debug/*.apk
+            mobile/android/app/build/outputs/apk/release/*.apk
           retention-days: 14
 
 # ─────────────────────────────────────────────────────────────────────────────
