@@ -43,6 +43,9 @@ sudo phoneauthctl pair      # 1. escaneie o QR, confira o código de 6 dígitos
 sudo -k && sudo true        # 3. teste com outra janela de terminal aberta
 ```
 
+O lado do celular — instalar o APK, permissões e requisitos do aparelho —
+está em [android.md](android.md).
+
 O QR vale 2 minutos. Durante o pareamento, o Mac mostra um código de seis
 dígitos e o celular mostra outro: **eles têm de ser iguais**. Esse código é
 derivado do segredo do QR e das chaves públicas dos dois lados, então um
