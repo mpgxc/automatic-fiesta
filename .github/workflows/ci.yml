@@ -202,7 +202,8 @@ jobs:
           for exigido in usr/local/bin/phoneauthd \
                          usr/local/bin/phoneauthctl \
                          usr/local/lib/pam/pam_phoneauth.so \
-                         Library/LaunchDaemons/dev.phoneauth.daemon.plist; do
+                         Library/LaunchDaemons/dev.phoneauth.daemon.plist \
+                         usr/local/share/man/man1/phoneauthctl.1; do
             if ! find /tmp/exp -path "*/Payload/$exigido" | grep -q .; then
               echo "::error::$exigido ausente do payload do .pkg"; falhou=1
             fi

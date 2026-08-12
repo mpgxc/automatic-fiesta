@@ -1,0 +1,142 @@
+.\" -*- mode: troff; coding: utf-8 -*-
+.\" A linha acima faz o preconv do groff tratar o arquivo como UTF-8.
+.\" Sem ela os acentos saem como mojibake: "usuÃ¡rio" em vez de "usuário".
+.\" Manual do phoneauthctl. Instalado pelo .pkg e pelo scripts/install.sh.
+.TH PHONEAUTHCTL 1 "2026" "PhoneAuth" "Comandos do usuário"
+.SH NOME
+phoneauthctl \- controla o daemon do PhoneAuth
+.SH SINOPSE
+.B sudo phoneauthctl
+.I comando
+.RI [ argumentos ]
+.SH DESCRIÇÃO
+.B phoneauthctl
+conversa com o
+.BR phoneauthd (8)
+por um socket Unix e é a única interface para parear celulares, revogá\-los e
+acompanhar o estado do daemon.
+.PP
+.B Todo comando exige root.
+O socket de controle é 0600 root:wheel de propósito: quem o alcança pode parear
+e revogar dispositivos, o que é o mesmo que decidir quem aprova os seus
+.BR sudo .
+.SH COMANDOS
+.TP
+.B status
+Mostra se o daemon responde, quantos dispositivos estão pareados e quantos
+celulares estão conectados no momento. O número de conectados é o que importa
+na hora de aprovar: zero significa que nenhum celular está alcançável.
+.TP
+.B list
+Lista os dispositivos pareados com id, plataforma, data do pareamento e quando
+foi visto pela última vez. Revogados aparecem marcados.
+.TP
+.B pair
+Inicia um pareamento. Mostra um QR válido por 2 minutos e, quando o celular
+responde, exibe um código de seis dígitos.
+.B Esse código precisa ser igual ao que aparece no celular.
+Ele deriva do segredo do QR e das chaves públicas dos dois lados, então alguém
+no meio da rede não consegue fazer os dois baterem. Se divergirem, recuse.
+.TP
+.BI revoke " id"
+Revoga um dispositivo mantendo o histórico. É o comando preferível: preserva o
+registro de que o aparelho existiu e quando foi desligado, que é o que torna um
+incidente investigável.
+.TP
+.BI remove " id"
+Apaga o dispositivo do registro, sem deixar rastro.
+.TP
+.B rotate
+Mostra o estado da rotação da identidade TLS: qual identidade está viva, se há
+rotação anunciada, quem já confirmou e quem falta.
+.TP
+.B rotate begin
+Gera uma identidade nova e a anuncia aos celulares, assinada pela identidade
+atual. A identidade viva continua sendo a antiga e nada quebra até o
+.BR commit .
+Com
+.B \-\-compromised
+a troca é imediata e todos os aparelhos precisam parear de novo — quem tem a
+chave vazada assinaria um anúncio igual apontando para a chave dele, então o
+mecanismo de anúncio não serve nesse caso.
+.TP
+.B rotate commit
+Passa a usar a identidade anunciada e derruba as sessões, que reconectam
+sozinhas.
+.B \-\-force
+comita antes de a janela fechar ou com dispositivos ainda sem confirmar; eles
+ficam trancados para fora.
+.TP
+.B rotate abort
+Descarta a rotação anunciada. A identidade viva não muda.
+.TP
+.B rotate qr
+Mostra o anúncio assinado como QR, para o aparelho que ficou fora do ar durante
+a janela inteira. Este QR não é secreto: é uma declaração pública assinada, e o
+aparelho mantém deviceId, chaves e histórico — não é repareamento.
+.SH ARQUIVOS
+.TP
+.I /var/run/phoneauthd.sock
+Socket de controle, 0600 root:wheel.
+.TP
+.I /Library/Application Support/PhoneAuth/
+Identidade TLS, registro de dispositivos e
+.IR config.json .
+.TP
+.I /var/log/phoneauthd.log
+Log do daemon. Registra o contexto dos pedidos, nunca desafios, assinaturas ou
+material de chave.
+.TP
+.I /usr/local/lib/pam/pam_phoneauth.so
+O módulo que o
+.B sudo
+carrega.
+.SH DIAGNÓSTICO
+.TP
+Erro de permissão
+Faltou
+.BR sudo .
+.TP
+"phoneauthd não está rodando"
+Não existe socket. Verifique com
+.BR "sudo launchctl print system/dev.phoneauth.daemon" .
+.TP
+O sudo pede senha e o celular não reage
+Daemon fora do ar, celular em outra rede, ou app fechado. Nada quebrou: o módulo
+entra como
+.B sufficient
+e cai para o próximo.
+.SH EXEMPLOS
+.PP
+Parear o primeiro celular e testar, com outra janela de terminal aberta:
+.PP
+.RS
+.nf
+sudo phoneauthctl pair
+sudo \-k && sudo true
+.fi
+.RE
+.PP
+Trocar a chave TLS sem repareamento:
+.PP
+.RS
+.nf
+sudo phoneauthctl rotate begin
+sudo phoneauthctl rotate           # espere todos confirmarem
+sudo phoneauthctl rotate commit
+.fi
+.RE
+.SH SEGURANÇA
+O módulo PAM entra como
+.BR sufficient ,
+jamais
+.BR required .
+Daemon fora do ar, celular sem bateria ou bug no código fazem o macOS voltar a
+pedir a senha — este projeto nunca tranca você fora da própria máquina.
+.SH VEJA TAMBÉM
+.BR sudo (8),
+.BR pam.conf (5),
+.BR launchctl (1)
+.PP
+Documentação completa em
+.IR https://github.com/mpgxc/automatic-fiesta .
