@@ -49,9 +49,29 @@ fi
 # true` cobre a primeira instalação, em que não há nada para derrubar.
 launchctl bootout "system/$LABEL" 2>/dev/null || true
 
-if ! launchctl bootstrap system "$PLIST"; then
-    echo "erro: launchctl bootstrap falhou para $LABEL" >&2
-    exit 1
-fi
+# `bootout` retorna antes de o serviço ter sumido de fato. Fazer `bootstrap`
+# em seguida, sem esperar, rende "Operation already in progress" (erro 37) —
+# e como o postinstall sai com 1, o instalador inteiro reporta falha. Numa
+# instalação limpa isso nunca acontece, porque não há nada para derrubar; só
+# aparece ao atualizar sobre um daemon vivo, que é o caminho comum depois da
+# primeira release.
+for _ in $(seq 1 50); do
+    launchctl print "system/$LABEL" >/dev/null 2>&1 || break
+    sleep 0.2
+done
+
+# Mesmo esperando, a corrida não é só nossa: o launchd tem trabalho pendente
+# que não dá para observar. Uma tentativa única aqui transforma um atraso de
+# meio segundo em instalação falhada, então insiste antes de desistir.
+tentativa=1
+until saida="$(launchctl bootstrap system "$PLIST" 2>&1)"; do
+    if [[ $tentativa -ge 5 ]]; then
+        echo "erro: launchctl bootstrap falhou para $LABEL após $tentativa tentativas" >&2
+        echo "      launchctl disse: ${saida:-(nada)}" >&2
+        exit 1
+    fi
+    tentativa=$((tentativa + 1))
+    sleep 1
+done
 
 exit 0

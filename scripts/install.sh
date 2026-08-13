@@ -113,7 +113,26 @@ echo "==> Instalando o LaunchDaemon"
 install -o root -g wheel -m 0644 macos/LaunchDaemon/dev.phoneauth.daemon.plist "$PLIST"
 
 launchctl bootout "system/$LABEL" 2>/dev/null || true
-launchctl bootstrap system "$PLIST"
+
+# Mesma espera-e-insiste do macos/installer/scripts/postinstall, e pelo mesmo
+# motivo: `bootout` retorna antes de o serviço sumir, e um `bootstrap` imediato
+# dá "Operation already in progress". Aqui, com `set -e`, isso abortaria o
+# script no meio — com os binários já instalados e o daemon fora do ar.
+for _ in $(seq 1 50); do
+    launchctl print "system/$LABEL" >/dev/null 2>&1 || break
+    sleep 0.2
+done
+
+tentativa=1
+until saida="$(launchctl bootstrap system "$PLIST" 2>&1)"; do
+    if [[ $tentativa -ge 5 ]]; then
+        echo "erro: launchctl bootstrap falhou após $tentativa tentativas" >&2
+        echo "      launchctl disse: ${saida:-(nada)}" >&2
+        exit 1
+    fi
+    tentativa=$((tentativa + 1))
+    sleep 1
+done
 
 sleep 1
 if phoneauthctl status >/dev/null 2>&1; then
