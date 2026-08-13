@@ -66,7 +66,13 @@ class PairingActivity : FragmentActivity() {
         data class Failed(val reason: String) : Step
     }
 
-    private val client by lazy { PhoneAuthClient(lifecycleScope) }
+    // O `applicationContext` não é opcional aqui, ao contrário do que a
+    // assinatura sugere: sem ele o `PhoneAuthClient` nasce com `discovery`
+    // nulo, e é a descoberta que salva o pareamento quando o `<nome>.local`
+    // do QR não resolve — o caso comum no Android, não a exceção. Sem isto o
+    // plano B de `pair()` vira código morto e o pareamento morre com
+    // "não foi possível conectar ao Mac" mesmo com o Mac ali do lado.
+    private val client by lazy { PhoneAuthClient(lifecycleScope, applicationContext) }
     private val store by lazy { PeerStore(this) }
 
     private var step: Step by mutableStateOf(Step.NeedsCamera(permanentlyDenied = false))

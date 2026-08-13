@@ -52,7 +52,13 @@ import javax.net.ssl.X509TrustManager
  */
 class PhoneAuthClient(
     private val scope: CoroutineScope,
-    context: Context? = null,
+    // Sem valor padrão de propósito. Enquanto havia `= null`, esquecer o
+    // contexto compilava em silêncio e degradava o cliente: sem descoberta e
+    // sem cache de endereço. Foi assim que a PairingActivity ficou sem plano B
+    // para o `<nome>.local` que o Android não resolve. O tipo segue anulável
+    // porque o degradado é legítimo quando escolhido; o que não pode é ser
+    // escolhido por omissão.
+    context: Context?,
 ) {
 
     data class Peer(
