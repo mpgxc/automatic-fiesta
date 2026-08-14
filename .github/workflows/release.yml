@@ -235,7 +235,7 @@ jobs:
     if: needs.versao.outputs.publicar == 'sim'
     runs-on: ubuntu-latest
     outputs:
-      assinado: ${{ steps.apk.outputs.assinado }}
+      assinatura: ${{ steps.apk.outputs.assinatura }}
     steps:
       # Idem: o versionName e o versionCode do APK derivam do VERSION deste
       # commit. Construir do merge produziria um APK com a versão anterior.
@@ -251,26 +251,61 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - id: keystore
-        name: Preparar a keystore, se houver
+        name: Preparar a keystore
+        # Sem keystore o Gradle produz um APK sem assinatura nenhuma, e o
+        # Android recusa esse arquivo já no parse. A release publicava, release
+        # após release, um APK que não instalava em aparelho nenhum — e o
+        # conserto ficava parado esperando alguém definir quatro secrets.
+        #
+        # Agora a ausência do secret não impede a assinatura: a build gera uma
+        # chave descartável e assina com ela. O APK instala. O que se perde é a
+        # estabilidade da identidade — a chave muda a cada release, então uma
+        # instalação feita com a anterior recusa a nova por cima, e é preciso
+        # desinstalar antes. Esse custo é real, mas é menor que publicar um
+        # arquivo inútil, e tanto o nome do arquivo quanto as notas avisam.
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
+          caminho="$RUNNER_TEMP/release.jks"
+
           if [ -n "$KEYSTORE_B64" ]; then
-            printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
-            echo "path=$RUNNER_TEMP/release.jks" >> "$GITHUB_OUTPUT"
-            echo "presente=sim" >> "$GITHUB_OUTPUT"
-            echo "keystore presente"
+            printf '%s' "$KEYSTORE_B64" | base64 -d > "$caminho"
+            echo "origem=secret" >> "$GITHUB_OUTPUT"
+            echo "keystore veio dos secrets do repositório"
           else
-            echo "presente=nao" >> "$GITHUB_OUTPUT"
-            echo "::warning::sem ANDROID_KEYSTORE_BASE64; o APK sairá SEM assinatura e não instala"
+            # A senha nasce e morre dentro deste job. O add-mask a esconde do
+            # log antes de ela aparecer em qualquer lugar.
+            senha="$(openssl rand -base64 24)"
+            echo "::add-mask::$senha"
+
+            keytool -genkeypair -noprompt \
+              -keystore "$caminho" -storepass "$senha" -keypass "$senha" \
+              -alias phoneauth -keyalg RSA -keysize 4096 -validity 10000 \
+              -dname "CN=PhoneAuth (chave temporaria de CI), O=PhoneAuth"
+
+            echo "origem=temporaria" >> "$GITHUB_OUTPUT"
+            echo "senha=$senha" >> "$GITHUB_OUTPUT"
+            echo "alias=phoneauth" >> "$GITHUB_OUTPUT"
+            echo "::warning::sem ANDROID_KEYSTORE_BASE64: assinando com chave descartável. O APK instala, mas não atualiza por cima de instalação feita por outra release. Defina os quatro secrets para ter assinatura estável."
           fi
 
+          echo "path=$caminho" >> "$GITHUB_OUTPUT"
+
       - name: Build de release
+        # A ordem do `||` importa e não é a intuitiva: os valores da chave
+        # gerada vêm ANTES dos secrets. Quando a keystore veio do secret, os
+        # outputs do passo anterior estão vazios e os secrets assumem, como se
+        # espera. Mas quando a chave foi gerada aqui, ela tem senha própria — e
+        # um repositório com ANDROID_KEYSTORE_PASSWORD definido e
+        # ANDROID_KEYSTORE_BASE64 faltando (secrets preenchidos pela metade)
+        # tentaria abrir a chave gerada com a senha do secret, e a build
+        # quebraria por um motivo difícil de enxergar no log. Quem gerou a
+        # chave é quem sabe a senha dela.
         env:
           ANDROID_KEYSTORE_PATH: ${{ steps.keystore.outputs.path }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ steps.keystore.outputs.senha || secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ steps.keystore.outputs.alias || secrets.ANDROID_KEY_ALIAS || 'phoneauth' }}
+          ANDROID_KEY_PASSWORD: ${{ steps.keystore.outputs.senha || secrets.ANDROID_KEY_PASSWORD }}
         run: gradle --project-dir mobile/android assembleRelease --no-daemon
 
       - id: apk
@@ -281,12 +316,16 @@ jobs:
         # keystore que decodifica para lixo — a release anunciaria um APK
         # assinado que não instala, que é exatamente o problema que o rótulo
         # existe para evitar. Agora quem decide é o apksigner.
+        #
+        # E agora que a build sempre tem uma keystore, APK sem assinatura deixou
+        # de ser um estado previsto: se acontecer, é defeito, e a release para
+        # aqui em vez de anexar o arquivo.
         env:
-          KEYSTORE_PRESENTE: ${{ steps.keystore.outputs.presente }}
+          ORIGEM_CHAVE: ${{ steps.keystore.outputs.origem }}
         run: |
           v="${{ needs.versao.outputs.versao }}"
-          origem=$(ls mobile/android/app/build/outputs/apk/release/*.apk | head -1)
-          echo "APK construído: $origem"
+          apk=$(ls mobile/android/app/build/outputs/apk/release/*.apk | head -1)
+          echo "APK construído: $apk"
 
           # apksigner vive no build-tools do SDK, que já está no runner — o
           # próprio assembleRelease depende dele.
@@ -297,28 +336,25 @@ jobs:
             exit 1
           fi
 
-          if "$apksigner" verify --print-certs "$origem"; then
-            assinado=sim
-          else
-            assinado=nao
-          fi
-          echo "assinatura verificada: $assinado"
-
-          if [ "$KEYSTORE_PRESENTE" = sim ] && [ "$assinado" = nao ]; then
-            echo "::error::a keystore foi fornecida mas o APK saiu sem assinatura; confira ANDROID_KEY_ALIAS e as senhas"
+          if ! "$apksigner" verify --print-certs "$apk"; then
+            echo "::error::o APK saiu sem assinatura válida mesmo com keystore disponível (origem: $ORIGEM_CHAVE). Confira ANDROID_KEY_ALIAS e as senhas; a release não será publicada com um APK que não instala."
             exit 1
           fi
+          echo "assinatura verificada pelo apksigner"
 
-          if [ "$assinado" = sim ]; then
+          # O sufixo no nome é o que separa um APK que atualiza por cima do
+          # anterior de um que exige desinstalar antes. Quem baixa precisa saber
+          # disso antes de instalar, não depois de ver "app não instalado".
+          if [ "$ORIGEM_CHAVE" = secret ]; then
             destino="phoneauth-$v.apk"
           else
-            destino="phoneauth-$v-SEM-ASSINATURA.apk"
+            destino="phoneauth-$v-CHAVE-TEMPORARIA.apk"
           fi
 
-          cp "$origem" "$destino"
+          cp "$apk" "$destino"
           sha256sum "$destino" | tee "$destino.sha256"
           ls -la "$destino"
-          echo "assinado=$assinado" >> "$GITHUB_OUTPUT"
+          echo "assinatura=$ORIGEM_CHAVE" >> "$GITHUB_OUTPUT"
 
       - name: Guardar o mapping do R8
         # Sem o mapping.txt desta build específica, todo stack trace vindo de
@@ -354,7 +390,7 @@ jobs:
       - name: Escrever as notas
         env:
           VERSAO: ${{ needs.versao.outputs.versao }}
-          ASSINADO: ${{ needs.android.outputs.assinado }}
+          ASSINATURA: ${{ needs.android.outputs.assinatura }}
         run: |
           ls -la dist
           {
@@ -394,19 +430,25 @@ jobs:
             echo
             echo "## Android"
             echo
-            if [ "$ASSINADO" = "sim" ]; then
+            if [ "$ASSINATURA" = "secret" ]; then
               echo "\`phoneauth-$VERSAO.apk\` — Android 10+ (minSdk 29)."
+              echo
+              echo "Assinado com a chave do repositório. Instala por cima de uma"
+              echo "release anterior sem desinstalar."
             else
-              echo "\`phoneauth-$VERSAO-SEM-ASSINATURA.apk\` — Android 10+ (minSdk 29)."
+              echo "\`phoneauth-$VERSAO-CHAVE-TEMPORARIA.apk\` — Android 10+ (minSdk 29)."
               echo
-              echo "> **Este APK não instala.** Verificado com \`apksigner\`: não tem"
-              echo "> assinatura v1 nem v2/v3. O Android recusa no parse, com"
-              echo "> \`INSTALL_PARSE_FAILED_NO_CERTIFICATES\` — que a interface mostra"
-              echo "> como um genérico \"app não instalado\". Não é \"fontes"
-              echo "> desconhecidas\" e não é a versão do Android."
+              echo "Instala normalmente, mas foi assinado com uma chave gerada na"
+              echo "hora da build e descartada em seguida."
               echo
-              echo "Para publicar um APK instalável, crie uma keystore **uma vez** e"
-              echo "guarde-a em secrets do repositório:"
+              echo "> **Se você já tem o PhoneAuth instalado, desinstale antes.**"
+              echo "> A chave desta release não é a da anterior, e o Android recusa"
+              echo "> atualização entre assinaturas diferentes — com o mesmo genérico"
+              echo "> \"app não instalado\" de sempre. Desinstalar apaga o pareamento:"
+              echo "> será preciso ler o QR de novo."
+              echo
+              echo "Para acabar com isso, dê ao repositório uma chave estável — uma"
+              echo "vez, e nunca mais:"
               echo
               echo '```sh'
               echo "keytool -genkeypair -v -keystore release.jks \\"
@@ -418,7 +460,8 @@ jobs:
               echo "Depois defina os quatro secrets em Settings → Secrets and"
               echo "variables → Actions: \`ANDROID_KEYSTORE_BASE64\`,"
               echo "\`ANDROID_KEYSTORE_PASSWORD\`, \`ANDROID_KEY_ALIAS\` (\`phoneauth\`)"
-              echo "e \`ANDROID_KEY_PASSWORD\`, e republique."
+              echo "e \`ANDROID_KEY_PASSWORD\`. A próxima release já sai com o nome"
+              echo "sem sufixo e atualiza por cima das instalações feitas com ela."
               echo
               echo "**Guarde o \`release.jks\` e as senhas.** A assinatura é a"
               echo "identidade do app: perder a chave impede qualquer atualização"
