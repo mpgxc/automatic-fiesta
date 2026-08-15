@@ -14,6 +14,9 @@ mobile/android/.gradle/
 mobile/android/build/
 mobile/android/app/build/
 mobile/android/local.properties
+# O compilador Kotlin 2.x escreve sessões e logs de erro aqui, ao lado do
+# projeto e fora de build/. É estado de máquina: some com o clone.
+mobile/android/.kotlin/
 *.apk
 *.aab
 
