@@ -465,6 +465,48 @@ class PhoneAuthClient(
         }
     }
 
+    /**
+     * Traduz o `code` da recusa numa frase que diz o que fazer.
+     *
+     * O protocolo mantém os erros vagos de propósito, para não dar pistas a
+     * quem sonda o daemon — mas o `code` já viaja no fio, então mostrá-lo não
+     * revela nada novo, e esconder dele o usuário legítimo só torna a falha
+     * indistinguível de qualquer outra. A diferença importa: QR vencido se
+     * resolve gerando outro, prova inválida não.
+     */
+    private fun motivoDaRecusa(code: String): String = when (code) {
+        "pairing_expired" ->
+            "O QR expirou — ele vale 2 minutos e é de uso único.\n" +
+                "Gere outro no Mac: sudo phoneauthctl pair"
+
+        "rate_limited" ->
+            "O Mac está recusando tentativas seguidas. Espere um pouco antes de tentar de novo."
+
+        "pairing_invalid" ->
+            "O Mac não aceitou a prova deste pareamento.\n" +
+                "Gere um QR novo; se repetir, o log do daemon diz o motivo exato."
+
+        "" -> "O Mac recusou o pareamento (sem código)."
+
+        else -> "O Mac recusou o pareamento: $code"
+    }
+
+    /**
+     * Falha de "não cheguei no Mac" com o motivo junto.
+     *
+     * O host do QR é um `<nome>.local`, e o resolvedor do Android costuma não
+     * dar conta dele; quando a descoberta também não traz ninguém, o usuário via
+     * apenas "não foi possível conectar", que descreve o sintoma e nenhuma das
+     * causas. Anexar o diagnóstico da última busca mDNS é o que transforma a
+     * tela de erro em algo sobre o que se pode agir — ou reportar.
+     */
+    private fun semRota(host: String, causa: Exception): IOException =
+        IOException(
+            "não cheguei em $host nem por nome nem por descoberta " +
+                "(${discovery?.ultimoDiagnostico ?: "descoberta indisponível"})",
+            causa,
+        )
+
     /** Hash do SPKI do certificado que o servidor apresentou nesta sessão. */
     private fun SSLSocket.spkiHex(): String =
         MessageDigest.getInstance("SHA-256")
@@ -890,7 +932,11 @@ class PhoneAuthClient(
         } catch (unreachable: Exception) {
             val discovered = discovery?.find(preferredName = name).orEmpty()
                 .map { Target(it.address.hostAddress ?: it.address.toString(), it.address, it.port) }
-            if (discovered.isEmpty()) throw unreachable
+            if (discovered.isEmpty()) throw semRota(host, unreachable)
+            // Se a descoberta achou candidatos e mesmo assim nenhum abriu, a
+            // exceção que sobe é a *desta* tentativa — porta fechada, firewall,
+            // isolamento de clientes no roteador. Substituí-la pela falha do
+            // `.local` trocaria a informação útil pela inútil.
             openFirst(discovered, listOf(spki), PAIRING_TIMEOUT_MS)
         }
         val ssl = opened.first
@@ -927,7 +973,7 @@ class PhoneAuthClient(
                 // Sem chaves órfãs: o pareamento falhou, então não há motivo
                 // para deixar material criptográfico para trás.
                 DeviceKeys.deleteAll()
-                throw IllegalStateException("o Mac recusou o pareamento")
+                throw IllegalStateException(motivoDaRecusa(response.optString("code")))
             }
             // O `Peer` guarda o nome do QR, que sobrevive a troca de IP; o
             // endereço que acabou de funcionar vai para o cache, para a

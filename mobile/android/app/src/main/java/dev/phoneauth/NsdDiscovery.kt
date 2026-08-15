@@ -41,6 +41,20 @@ class NsdDiscovery(context: Context) {
     private val browseGate = Mutex()
 
     /**
+     * Resumo da última rodada, em uma linha, para a tela de erro mostrar.
+     *
+     * Sem isto toda falha de rede chega ao usuário como "não foi possível
+     * conectar", que não distingue enlace sem multicast, descoberta que nem
+     * começou, ninguém anunciando, ou anúncio que não resolve — quatro causas
+     * com quatro consertos diferentes. O texto é curto de propósito: cabe numa
+     * captura de tela, que é como esta informação costuma chegar a quem pode
+     * consertar.
+     */
+    @Volatile
+    var ultimoDiagnostico: String = "descoberta ainda não rodou"
+        private set
+
+    /**
      * O `resolveService` clássico atende **um** pedido de cada vez no
      * framework; dois ao mesmo tempo devolvem `FAILURE_ALREADY_ACTIVE`.
      */
@@ -59,12 +73,18 @@ class NsdDiscovery(context: Context) {
         windowMs: Long = BROWSE_WINDOW_MS,
         limit: Int = MAX_CANDIDATES,
     ): List<Endpoint> = browseGate.withLock {
-        val nsd = nsd ?: return emptyList()
+        val nsd = nsd ?: run {
+            ultimoDiagnostico = "mDNS indisponível neste aparelho"
+            return emptyList()
+        }
 
         // Sem enlace que carregue multicast (celular puro, avião), mDNS não vai
         // a lugar nenhum: melhor devolver vazio na hora e deixar o chamador ir
         // direto para o endereço salvo do que segurar o rádio por segundos.
-        if (!hasMulticastCapableLink()) return emptyList()
+        if (!hasMulticastCapableLink()) {
+            ultimoDiagnostico = "sem Wi-Fi nem cabo: mDNS não roda em rede móvel"
+            return emptyList()
+        }
 
         // Sem o MulticastLock o Wi-Fi de muitos aparelhos descarta os pacotes
         // multicast antes de eles chegarem ao app, e a descoberta simplesmente
@@ -79,12 +99,19 @@ class NsdDiscovery(context: Context) {
         }.getOrNull()
 
         val endpoints = ArrayList<Endpoint>()
+        var anunciados = 0
+        var falhaAoIniciar: Int? = null
+        var tipoQueFuncionou: String? = null
         try {
             // Teto duro para a rodada inteira. O lock é caro demais para ficar
             // de pé enquanto um resolve emperrado decide se responde; o que já
             // tiver resolvido até aqui vale, o resto fica para a próxima.
             withTimeoutOrNull(BUDGET_MS) {
-                for (service in browse(nsd, preferredName, windowMs).take(limit)) {
+                val rodada = browse(nsd, preferredName, windowMs)
+                anunciados = rodada.servicos.size
+                falhaAoIniciar = rodada.erroAoIniciar
+                tipoQueFuncionou = rodada.tipo
+                for (service in rodada.servicos.take(limit)) {
                     val resolved = resolve(nsd, service) ?: continue
                     @Suppress("DEPRECATION") // getHostAddresses() só existe da API 34 em diante.
                     val address = resolved.host ?: continue
@@ -96,18 +123,59 @@ class NsdDiscovery(context: Context) {
         } finally {
             runCatching { if (lock != null && lock.isHeld) lock.release() }
         }
+
+        ultimoDiagnostico = when {
+            falhaAoIniciar != null -> "busca mDNS recusada pelo sistema (código $falhaAoIniciar)"
+            anunciados == 0 -> "ninguém anunciando $SERVICE_TYPE na rede"
+            endpoints.isEmpty() -> "$anunciados anúncio(s), nenhum resolveu para endereço"
+            else -> "$anunciados anúncio(s), ${endpoints.size} resolvido(s)" +
+                (tipoQueFuncionou?.let { if (it.endsWith(".")) " [tipo com ponto]" else "" } ?: "")
+        }
         endpoints
     }
 
     // MARK: - Busca
 
+    /** O que uma rodada de busca produziu, incluindo por que não produziu nada. */
+    private class Rodada(
+        val servicos: List<NsdServiceInfo>,
+        val erroAoIniciar: Int?,
+        val tipo: String?,
+    )
+
+    /**
+     * Busca com o tipo canônico e, se o sistema **recusar a busca**, repete com
+     * a forma terminada em ponto.
+     *
+     * O exemplo oficial de NSD do Android declara o tipo como `_http._tcp.`,
+     * com ponto final, enquanto o registro DNS-SD canônico — o que o daemon
+     * anuncia — não leva ponto. Aparelhos discordam sobre qual aceitar, e
+     * quando recusam, recusam de imediato, com `onStartDiscoveryFailed`.
+     *
+     * A segunda tentativa só acontece nesse caso justamente porque falhar ao
+     * iniciar é instantâneo: não custa janela nenhuma. Se a busca *começou* e
+     * não achou nada, o tipo não é o problema e repetir só gastaria mais seis
+     * segundos com o rádio ligado.
+     */
     private suspend fun browse(
         nsd: NsdManager,
         preferredName: String?,
         windowMs: Long,
-    ): List<NsdServiceInfo> {
+    ): Rodada {
+        val primeira = browseComTipo(nsd, SERVICE_TYPE, preferredName, windowMs)
+        if (primeira.erroAoIniciar == null) return primeira
+        return browseComTipo(nsd, SERVICE_TYPE_COM_PONTO, preferredName, windowMs)
+    }
+
+    private suspend fun browseComTipo(
+        nsd: NsdManager,
+        tipo: String,
+        preferredName: String?,
+        windowMs: Long,
+    ): Rodada {
         val found = CopyOnWriteArrayList<NsdServiceInfo>()
         val startFailed = AtomicBoolean(false)
+        val startErrorCode = java.util.concurrent.atomic.AtomicInteger(0)
 
         // Listener novo a cada rodada, sempre. Reaproveitar o objeto antes de o
         // `stopServiceDiscovery` anterior ter completado rende
@@ -116,6 +184,7 @@ class NsdDiscovery(context: Context) {
             override fun onDiscoveryStarted(serviceType: String) {}
             override fun onDiscoveryStopped(serviceType: String) {}
             override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
+                startErrorCode.set(errorCode)
                 startFailed.set(true)
             }
             override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {}
@@ -129,9 +198,12 @@ class NsdDiscovery(context: Context) {
         }
 
         val started = runCatching {
-            nsd.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, listener)
+            nsd.discoverServices(tipo, NsdManager.PROTOCOL_DNS_SD, listener)
         }.isSuccess
-        if (!started) return emptyList()
+        // Recusa síncrona (o framework lança em vez de chamar o callback) não
+        // tem código de erro para reportar; -1 a distingue de uma recusa
+        // assíncrona, que traz o código do Android.
+        if (!started) return Rodada(emptyList(), erroAoIniciar = -1, tipo = tipo)
 
         try {
             val startedAt = SystemClock.elapsedRealtime()
@@ -153,11 +225,15 @@ class NsdDiscovery(context: Context) {
             runCatching { nsd.stopServiceDiscovery(listener) }
         }
 
-        return found
-            .distinctBy { it.serviceName }
-            // Ordenação estável: o preferido sobe, o resto mantém a ordem em
-            // que apareceu.
-            .sortedByDescending { it.serviceName == preferredName }
+        return Rodada(
+            servicos = found
+                .distinctBy { it.serviceName }
+                // Ordenação estável: o preferido sobe, o resto mantém a ordem em
+                // que apareceu.
+                .sortedByDescending { it.serviceName == preferredName },
+            erroAoIniciar = if (startFailed.get()) startErrorCode.get() else null,
+            tipo = tipo,
+        )
     }
 
     // MARK: - Resolução
@@ -204,6 +280,9 @@ class NsdDiscovery(context: Context) {
     companion object {
         /** O mesmo tipo anunciado pelo daemon em `PhoneListener.swift`. */
         const val SERVICE_TYPE = "_phoneauth._tcp"
+
+        /** A forma que o exemplo oficial de NSD do Android usa. Ver [browse]. */
+        const val SERVICE_TYPE_COM_PONTO = "$SERVICE_TYPE."
 
         private const val MULTICAST_TAG = "phoneauth-nsd"
         private const val BROWSE_WINDOW_MS = 6_000L

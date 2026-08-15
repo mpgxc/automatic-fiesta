@@ -329,7 +329,14 @@ class PairingActivity : FragmentActivity() {
             "QR code não reconhecido."
 
         error is java.io.IOException ->
-            "Não foi possível conectar ao Mac. Confira se ele está na mesma rede."
+            // A frase genérica cobria quatro causas distintas — enlace sem
+            // multicast, busca recusada pelo sistema, ninguém anunciando, porta
+            // inalcançável — e mandava o usuário conferir a única que
+            // normalmente já está certa. O detalhe vem embaixo, em letra menor:
+            // quem só quer tentar de novo ignora, e quem vai reportar o
+            // problema tem o que reportar.
+            "Não foi possível conectar ao Mac. Confira se ele está na mesma rede." +
+                (error.message?.takeIf { it.isNotBlank() }?.let { "\n\n$it" } ?: "")
 
         else -> error.message?.takeIf { it.isNotBlank() } ?: "Falha no pareamento."
     }
