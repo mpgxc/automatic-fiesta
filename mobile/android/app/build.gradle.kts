@@ -106,4 +106,10 @@ dependencies {
     // cross-plataforma precisam rodar sem emulador nem Robolectric, para que
     // uma divergência de bytes apareça no CI mais barato possível.
     testImplementation("junit:junit:4.13.2")
+
+    // O `org.json` do android.jar é só assinatura: em teste unitário todo
+    // método lança "not mocked". Esta é a implementação de verdade, a mesma
+    // que o AOSP empacota, e no classpath de teste ela vem antes do stub.
+    // Sem ela não dá para exercitar nada que leia quadro do protocolo.
+    testImplementation("org.json:json:20240303")
 }
