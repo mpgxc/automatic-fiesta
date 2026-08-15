@@ -466,6 +466,32 @@ class PhoneAuthClient(
     }
 
     /**
+     * Traduz o `code` da recusa numa frase que diz o que fazer.
+     *
+     * O protocolo mantém os erros vagos de propósito, para não dar pistas a
+     * quem sonda o daemon — mas o `code` já viaja no fio, então mostrá-lo não
+     * revela nada novo, e esconder dele o usuário legítimo só torna a falha
+     * indistinguível de qualquer outra. A diferença importa: QR vencido se
+     * resolve gerando outro, prova inválida não.
+     */
+    private fun motivoDaRecusa(code: String): String = when (code) {
+        "pairing_expired" ->
+            "O QR expirou — ele vale 2 minutos e é de uso único.\n" +
+                "Gere outro no Mac: sudo phoneauthctl pair"
+
+        "rate_limited" ->
+            "O Mac está recusando tentativas seguidas. Espere um pouco antes de tentar de novo."
+
+        "pairing_invalid" ->
+            "O Mac não aceitou a prova deste pareamento.\n" +
+                "Gere um QR novo; se repetir, o log do daemon diz o motivo exato."
+
+        "" -> "O Mac recusou o pareamento (sem código)."
+
+        else -> "O Mac recusou o pareamento: $code"
+    }
+
+    /**
      * Falha de "não cheguei no Mac" com o motivo junto.
      *
      * O host do QR é um `<nome>.local`, e o resolvedor do Android costuma não
@@ -947,7 +973,7 @@ class PhoneAuthClient(
                 // Sem chaves órfãs: o pareamento falhou, então não há motivo
                 // para deixar material criptográfico para trás.
                 DeviceKeys.deleteAll()
-                throw IllegalStateException("o Mac recusou o pareamento")
+                throw IllegalStateException(motivoDaRecusa(response.optString("code")))
             }
             // O `Peer` guarda o nome do QR, que sobrevive a troca de IP; o
             // endereço que acabou de funcionar vai para o cache, para a
