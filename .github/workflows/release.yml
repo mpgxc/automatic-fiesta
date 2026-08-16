@@ -143,8 +143,13 @@ jobs:
         # significaria descobrir uma divergência de compilador na hora de
         # publicar, e uma tag não se reaproveita.
         run: |
-          make -C macos/pam \
-            CFLAGS="-Wall -Wextra -Wconversion -Wshadow -Wpointer-arith -Wwrite-strings -O2 -std=gnu11 -fstack-protector-strong -arch arm64 -arch x86_64"
+          producao="-Wall -Wextra -Wconversion -Wshadow -Wpointer-arith -Wwrite-strings -O2 -std=gnu11 -fstack-protector-strong"
+          arquiteturas="-arch arm64 -arch x86_64"
+          make -C macos/pam CFLAGS="$producao $arquiteturas"
+          # O plugin de autorização entra no .pkg junto; sem construí-lo aqui, o
+          # empacotamento falha com "No such file or directory" já com a tag
+          # criada — e tag não se reaproveita.
+          make -C macos/authplugin CFLAGS="$producao $arquiteturas"
 
       - name: Localizar os binários
         id: bin
@@ -184,7 +189,8 @@ jobs:
           falhou=0
           for b in "${{ steps.bin.outputs.dir }}/phoneauthd" \
                    "${{ steps.bin.outputs.dir }}/phoneauthctl" \
-                   macos/pam/pam_phoneauth.so; do
+                   macos/pam/pam_phoneauth.so \
+                   macos/authplugin/PhoneAuth; do
             archs=$(lipo -archs "$b")
             echo "$b: $archs"
             case "$archs" in

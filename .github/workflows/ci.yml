@@ -177,6 +177,14 @@ jobs:
           make
           file pam_phoneauth.so
 
+      - name: Plugin de autorização com o clang do macOS
+        # Só aqui ele encontra os headers de verdade do Security.framework; o
+        # shim usado nos testes serve para a lógica, não para a ABI.
+        run: |
+          cd macos/authplugin
+          make
+          file PhoneAuth
+
       # ── Instalador ────────────────────────────────────────────────────────
       #
       # O .pkg é construído a cada push, não só nas tags. O primeiro release
@@ -186,9 +194,12 @@ jobs:
       - name: Build universal para o instalador
         run: |
           swift build -c release --arch arm64 --arch x86_64 --package-path macos
+          arquiteturas="-arch arm64 -arch x86_64"
+          producao="-Wall -Wextra -Wconversion -Wshadow -Wpointer-arith -Wwrite-strings -O2 -std=gnu11 -fstack-protector-strong"
           make -C macos/pam clean
-          make -C macos/pam \
-            CFLAGS="-Wall -Wextra -Wconversion -Wshadow -Wpointer-arith -Wwrite-strings -O2 -std=gnu11 -fstack-protector-strong -arch arm64 -arch x86_64"
+          make -C macos/pam CFLAGS="$producao $arquiteturas"
+          make -C macos/authplugin clean
+          make -C macos/authplugin CFLAGS="$producao $arquiteturas"
 
       - name: Confirmar que é universal
         id: universal
@@ -205,7 +216,8 @@ jobs:
             exit 1
           fi
           falhou=0
-          for b in "$dir/phoneauthd" "$dir/phoneauthctl" macos/pam/pam_phoneauth.so; do
+          for b in "$dir/phoneauthd" "$dir/phoneauthctl" macos/pam/pam_phoneauth.so \
+                   macos/authplugin/PhoneAuth; do
             archs=$(lipo -archs "$b")
             echo "$b: $archs"
             case "$archs" in
