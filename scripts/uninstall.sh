@@ -49,6 +49,7 @@ rm -f "/Library/LaunchDaemons/$LABEL.plist"
 echo "==> Removendo binários e o módulo"
 rm -f /usr/local/bin/phoneauthd /usr/local/bin/phoneauthctl
 rm -f /usr/local/lib/pam/pam_phoneauth.so
+rm -rf /Library/Security/SecurityAgentPlugins/PhoneAuth.bundle
 rm -f /usr/local/share/man/man1/phoneauthctl.1
 rmdir /usr/local/lib/pam 2>/dev/null || true
 rm -f /var/run/phoneauthd.sock

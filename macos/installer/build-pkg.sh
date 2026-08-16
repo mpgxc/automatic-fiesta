@@ -53,6 +53,14 @@ install -m 0755 "$BINDIR/phoneauthctl" "$STAGE/usr/local/bin/phoneauthctl"
 # qualquer outro caminho seria escalação de privilégio local disfarçada de
 # detalhe de permissão.
 install -m 0444 "$RAIZ/macos/pam/pam_phoneauth.so" "$STAGE/usr/local/lib/pam/pam_phoneauth.so"
+# Mesmo raciocínio de permissão do módulo PAM: carregado pelo SecurityAgent,
+# que roda privilegiado.
+install -d "$STAGE/Library/Security/SecurityAgentPlugins/PhoneAuth.bundle/Contents/MacOS"
+install -m 0444 "$RAIZ/macos/authplugin/PhoneAuth" \
+                "$STAGE/Library/Security/SecurityAgentPlugins/PhoneAuth.bundle/Contents/MacOS/PhoneAuth"
+install -m 0444 "$RAIZ/macos/authplugin/Info.plist" \
+                "$STAGE/Library/Security/SecurityAgentPlugins/PhoneAuth.bundle/Contents/Info.plist"
+
 install -m 0644 "$RAIZ/macos/LaunchDaemon/dev.phoneauth.daemon.plist" \
                 "$STAGE/Library/LaunchDaemons/dev.phoneauth.daemon.plist"
 

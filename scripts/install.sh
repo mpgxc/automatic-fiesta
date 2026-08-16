@@ -10,6 +10,7 @@ set -euo pipefail
 
 STATE_DIR="/Library/Application Support/PhoneAuth"
 PAM_DIR="/usr/local/lib/pam"
+PLUGIN_DIR=/Library/Security/SecurityAgentPlugins
 BIN_DIR="/usr/local/bin"
 MAN_DIR="/usr/local/share/man/man1"
 PLIST="/Library/LaunchDaemons/dev.phoneauth.daemon.plist"
@@ -45,9 +46,18 @@ else
     echo "==> Usando o módulo PAM pré-construído"
 fi
 
+if [[ -f macos/authplugin/Makefile ]]; then
+    echo "==> Construindo o plugin de autorização"
+    (cd macos/authplugin && make)
+else
+    echo "==> Usando o plugin de autorização pré-construído"
+fi
+
 for artefato in macos/.build/release/phoneauthd \
                 macos/.build/release/phoneauthctl \
                 macos/pam/pam_phoneauth.so \
+                macos/authplugin/PhoneAuth \
+                macos/authplugin/Info.plist \
                 macos/LaunchDaemon/dev.phoneauth.daemon.plist \
                 macos/man/phoneauthctl.1; do
     if [[ ! -f "$artefato" ]]; then
@@ -104,6 +114,18 @@ install -o root -g wheel -m 0755 macos/.build/release/phoneauthctl "$BIN_DIR/pho
 echo "==> Instalando o módulo PAM em $PAM_DIR"
 install -d -o root -g wheel -m 0755 "$PAM_DIR"
 install -o root -g wheel -m 0444 macos/pam/pam_phoneauth.so "$PAM_DIR/pam_phoneauth.so"
+
+echo "==> Instalando o plugin de autorização (INATIVO)"
+# Instalar não ativa: o plugin só passa a ser consultado depois de
+# `phoneauthctl authplugin enable`, que edita o authorization database. A
+# separação é proposital — diferente do PAM, este mecanismo não tem queda para
+# senha, então ligá-lo é uma decisão consciente, nunca efeito colateral de
+# instalar.
+install -d -o root -g wheel -m 0755 "$PLUGIN_DIR/PhoneAuth.bundle/Contents/MacOS"
+install -o root -g wheel -m 0444 macos/authplugin/PhoneAuth \
+        "$PLUGIN_DIR/PhoneAuth.bundle/Contents/MacOS/PhoneAuth"
+install -o root -g wheel -m 0444 macos/authplugin/Info.plist \
+        "$PLUGIN_DIR/PhoneAuth.bundle/Contents/Info.plist"
 
 echo "==> Instalando a man page"
 install -d -o root -g wheel -m 0755 "$MAN_DIR"

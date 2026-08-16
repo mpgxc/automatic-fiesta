@@ -29,6 +29,16 @@ quem aprova seus sudos.
   rotate qr           mostra o anúncio assinado como QR, para o celular que
                       ficou fora do ar a janela inteira
 
+  authplugin          mostra o estado do plugin de autorização
+  authplugin enable [direito]   passa o direito a pedir aprovação no celular
+                                (padrão: system.preferences)
+  authplugin disable [direito]  restaura a regra original do direito
+
+       O plugin cobre os diálogos gráficos, que não passam por PAM. Diferente
+       do módulo PAM, ele NÃO tem queda para senha: enquanto ativo, o direito
+       fica indisponível se o celular não responder. O `disable` é a saída, e
+       funciona sempre porque `sudo` continua sendo PAM.
+
 Uso no dia a dia: docs/uso.md
 Rotação, desenho e trade-offs: docs/rotacao-de-identidade.md
 """
@@ -440,6 +450,137 @@ func commandRotateQR() throws {
     print("O aparelho mantém deviceId, chaves e histórico; não é repareamento.")
 }
 
+// MARK: - Plugin de autorização
+
+/// Direitos que o `enable` recusa, e por que a lista existe.
+///
+/// Ativar o plugin num direito troca a regra dele por "pergunte ao celular".
+/// Como um mecanismo de autorização não tem o degrau `sufficient` do PAM, esse
+/// direito fica indisponível enquanto o celular não responder. Isso é aceitável
+/// para abrir um painel de preferências e inaceitável para qualquer direito de
+/// que o próprio resgate dependa — em particular `config.modify.*`, que é o que
+/// o `security authorizationdb write` exige para desfazer isto.
+///
+/// Um `enable` ali seria uma armadilha perfeita: quebraria o caminho de saída no
+/// exato momento em que ele passa a ser necessário.
+let direitosProibidos = [
+    "config.modify.",          // desfazer o enable depende deste
+    "system.login.",           // login e tela de bloqueio: tranca de verdade
+    "authenticate",            // regra base de que muitas outras derivam
+    "system.privilege.admin",  // amplo demais; muita coisa herda dele
+]
+
+let caminhoPlugin = "/Library/Security/SecurityAgentPlugins/PhoneAuth.bundle"
+let diretorioBackup = "/Library/Application Support/PhoneAuth/authdb-backup"
+
+func caminhoBackup(_ direito: String) -> String {
+    "\(diretorioBackup)/\(direito).plist"
+}
+
+@discardableResult
+func executar(_ programa: String, _ args: [String], entrada: Data? = nil) throws -> Data {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: programa)
+    p.arguments = args
+
+    let saida = Pipe()
+    p.standardOutput = saida
+    p.standardError = FileHandle.nullDevice
+
+    let entradaPipe = Pipe()
+    if entrada != nil { p.standardInput = entradaPipe }
+
+    try p.run()
+    if let entrada {
+        entradaPipe.fileHandleForWriting.write(entrada)
+        entradaPipe.fileHandleForWriting.closeFile()
+    }
+    let dados = saida.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
+
+    guard p.terminationStatus == 0 else {
+        throw Failure("\(programa) \(args.joined(separator: " ")) falhou (status \(p.terminationStatus))")
+    }
+    return dados
+}
+
+func commandAuthPluginEnable(_ direito: String) throws {
+    for proibido in direitosProibidos where direito == proibido || direito.hasPrefix(proibido) {
+        throw Failure("""
+            recusado: '\(direito)' não pode ser controlado pelo celular.
+
+            Um mecanismo de autorização não tem queda para senha como o PAM: se o
+            celular não responder, o direito fica indisponível. Neste em
+            particular isso quebraria o próprio caminho de desfazer.
+            """)
+    }
+
+    guard FileManager.default.fileExists(atPath: caminhoPlugin) else {
+        throw Failure("plugin não instalado em \(caminhoPlugin)")
+    }
+
+    let atual = try executar("/usr/bin/security", ["authorizationdb", "read", direito])
+    guard var regra = try PropertyListSerialization.propertyList(
+        from: atual, options: [], format: nil) as? [String: Any] else {
+        throw Failure("não consegui ler a regra de '\(direito)'")
+    }
+
+    // Backup antes de tocar em qualquer coisa. Sem ele, desfazer viraria
+    // adivinhação sobre qual era a regra de fábrica.
+    let backup = caminhoBackup(direito)
+    try FileManager.default.createDirectory(
+        atPath: (backup as NSString).deletingLastPathComponent,
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700])
+    if !FileManager.default.fileExists(atPath: backup) {
+        try atual.write(to: URL(fileURLWithPath: backup))
+    }
+
+    regra["class"] = "evaluate-mechanisms"
+    regra["mechanisms"] = ["PhoneAuth:check,privileged"]
+    regra["shared"] = false
+
+    let novo = try PropertyListSerialization.data(
+        fromPropertyList: regra, format: .xml, options: 0)
+    try executar("/usr/bin/security", ["authorizationdb", "write", direito], entrada: novo)
+
+    print("'\(direito)' agora pede aprovação no celular.")
+    print("regra original guardada em: \(backup)")
+    print("")
+    print("ATENÇÃO: enquanto isto estiver ativo, esse direito fica indisponível")
+    print("se o celular não responder — não há queda para senha aqui.")
+    print("Para desfazer, de qualquer situação:")
+    print("")
+    print("    sudo phoneauthctl authplugin disable \(direito)")
+}
+
+func commandAuthPluginDisable(_ direito: String) throws {
+    let backup = caminhoBackup(direito)
+    guard FileManager.default.fileExists(atPath: backup) else {
+        throw Failure("sem backup para '\(direito)' em \(backup); nada a restaurar")
+    }
+    let dados = try Data(contentsOf: URL(fileURLWithPath: backup))
+    try executar("/usr/bin/security", ["authorizationdb", "write", direito], entrada: dados)
+    try? FileManager.default.removeItem(atPath: backup)
+    print("'\(direito)' restaurado para a regra original.")
+}
+
+func commandAuthPluginStatus() throws {
+    print("plugin instalado: \(FileManager.default.fileExists(atPath: caminhoPlugin) ? "sim" : "não")")
+
+    let backups = (try? FileManager.default.contentsOfDirectory(atPath: diretorioBackup)) ?? []
+    let ativos = backups.filter { $0.hasSuffix(".plist") }
+        .map { String($0.dropLast(".plist".count)) }
+        .sorted()
+
+    if ativos.isEmpty {
+        print("direitos controlados pelo celular: nenhum")
+    } else {
+        print("direitos controlados pelo celular:")
+        for d in ativos { print("  \(d)") }
+    }
+}
+
 // MARK: - Despacho
 
 let arguments = Array(CommandLine.arguments.dropFirst())
@@ -467,6 +608,19 @@ do {
         case "qr":     try commandRotateQR()
         default:
             throw Failure("subcomando de rotate desconhecido: '\(sub)'. Use status, begin, commit, abort ou qr.")
+        }
+    case "authplugin":
+        let sub = arguments.count >= 2 ? arguments[1] : "status"
+        // Sem direito explícito, `system.preferences`: é o que cobre os
+        // "Ajustes do Sistema querem fazer alterações" e é seguro de perder,
+        // porque nada do resgate passa por ele.
+        let direito = arguments.count >= 3 ? arguments[2] : "system.preferences"
+        switch sub {
+        case "status":  try commandAuthPluginStatus()
+        case "enable":  try commandAuthPluginEnable(direito)
+        case "disable": try commandAuthPluginDisable(direito)
+        default:
+            throw Failure("subcomando de authplugin desconhecido: '\(sub)'. Use status, enable ou disable.")
         }
     case "-h", "--help", "help":
         print(usage)
