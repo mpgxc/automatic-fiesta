@@ -209,6 +209,16 @@ class PhoneAuthClient(
         /** Pareamento espera o humano confirmar o SAS no Mac, então a mão é mais leve. */
         private const val PAIRING_TIMEOUT_MS = 10_000
 
+        /**
+         * Espera pela resposta ao `pair.request`, que só sai depois que alguém
+         * confirma o SAS no terminal do Mac.
+         *
+         * Cobre com folga a sessão de pareamento do daemon, que expira em 120 s:
+         * quem decide o desfecho é o prazo de lá, e um teto mais curto aqui só
+         * abandonaria um pareamento que ainda tinha chance.
+         */
+        private const val PAIR_ANSWER_TIMEOUT_MS = 150_000
+
         private const val KEEPALIVE_MS = 30_000L
         private const val SESSION_READ_TIMEOUT_MS = 90_000
         private const val BACKOFF_BASE_MS = 1_000L
@@ -216,6 +226,38 @@ class PhoneAuthClient(
 
         /** Abaixo disto a sessão não conta como saudável para zerar o backoff. */
         private const val HEALTHY_SESSION_MS = 10_000L
+
+        /**
+         * Consome quadros até chegar o que encerra o pareamento.
+         *
+         * Separado do socket para poder ser exercitado por teste: a ordem em
+         * que o daemon fala é justamente a parte que já quebrou, e um fluxo de
+         * bytes reproduz isso sem precisar de rede, TLS nem um Mac do lado.
+         */
+        @JvmStatic
+        internal fun lerAteRespostaDoPareamento(input: DataInputStream): JSONObject {
+            while (true) {
+                val header = ByteArray(4)
+                input.readFully(header)
+                val length = ((header[0].toInt() and 0xFF) shl 24) or
+                    ((header[1].toInt() and 0xFF) shl 16) or
+                    ((header[2].toInt() and 0xFF) shl 8) or (header[3].toInt() and 0xFF)
+                require(length in 1..65_536) { "resposta malformada" }
+
+                val bytes = ByteArray(length)
+                input.readFully(bytes)
+                val frame = JSONObject(String(bytes, Charsets.UTF_8))
+
+                when (frame.optString("type")) {
+                    "pair.ok", "error" -> return frame
+                    // `hello.challenge` e qualquer outro quadro que o daemon
+                    // venha a mandar antes da resposta não são para esta etapa.
+                    // Descartar em vez de tratar como falha é o que mantém o
+                    // pareamento imune a acréscimos futuros no protocolo.
+                    else -> Unit
+                }
+            }
+        }
 
         fun openPinnedSocket(host: String, port: Int, pins: Collection<String>, timeoutMs: Int = 10_000): SSLSocket =
             openPinnedSocket(InetSocketAddress(host, port), host, pins, timeoutMs)
@@ -463,6 +505,29 @@ class PhoneAuthClient(
             if (discovered.isEmpty()) throw unreachable
             openFirst(discovered, peer.pins, CONNECT_TIMEOUT_MS)
         }
+    }
+
+    /**
+     * Lê quadros até chegar o que responde ao `pair.request`.
+     *
+     * O daemon manda um `hello.challenge` assim que a conexão fica pronta —
+     * antes de qualquer pedido nosso, porque ele não sabe se quem conectou vem
+     * parear ou autenticar. Ler um quadro só e presumir que é a resposta pega o
+     * desafio, conclui "não é pair.ok" e aborta um pareamento que do outro lado
+     * estava indo bem: o Mac já validou o HMAC e a assinatura e está mostrando
+     * o SAS, esperando a pessoa confirmar.
+     *
+     * O iOS nunca teve este problema porque lá a leitura é um laço de eventos e
+     * um quadro desconhecido simplesmente não muda de estado. Aqui a leitura é
+     * sequencial, então ignorar o que não interessa precisa ser explícito.
+     */
+    private fun aguardarRespostaDoPareamento(ssl: SSLSocket): JSONObject {
+        // A confirmação do SAS é humana: o Mac só responde depois que alguém
+        // digita no terminal dele. O teto acompanha, com folga, o prazo da
+        // sessão de pareamento do daemon — sem nenhum teto, um Mac que morresse
+        // no meio deixaria a tela girando para sempre.
+        ssl.soTimeout = PAIR_ANSWER_TIMEOUT_MS
+        return lerAteRespostaDoPareamento(DataInputStream(ssl.inputStream))
     }
 
     /**
@@ -957,17 +1022,7 @@ class PhoneAuthClient(
                 flush()
             }
 
-            val input = DataInputStream(ssl.inputStream)
-            val header = ByteArray(4)
-            input.readFully(header)
-            val length = ((header[0].toInt() and 0xFF) shl 24) or
-                ((header[1].toInt() and 0xFF) shl 16) or
-                ((header[2].toInt() and 0xFF) shl 8) or (header[3].toInt() and 0xFF)
-            require(length in 1..65_536) { "resposta malformada" }
-
-            val responseBytes = ByteArray(length)
-            input.readFully(responseBytes)
-            val response = JSONObject(String(responseBytes, Charsets.UTF_8))
+            val response = aguardarRespostaDoPareamento(ssl)
 
             if (response.optString("type") != "pair.ok") {
                 // Sem chaves órfãs: o pareamento falhou, então não há motivo

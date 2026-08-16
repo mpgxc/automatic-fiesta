@@ -194,6 +194,57 @@ func commandStatus() throws {
     print("daemon:               rodando")
     print("dispositivos pareados: \(response["devicesTotal"] as? Int ?? 0) (\(response["devicesActive"] as? Int ?? 0) ativos)")
     print("celulares conectados:  \(response["sessionsConnected"] as? Int ?? 0)")
+    print("sudo:                  \(descreveLigacaoComSudo())")
+}
+
+/// Diz se o `sudo` desta máquina realmente passa pelo módulo.
+///
+/// Daemon rodando, celular pareado e conectado, e mesmo assim o `sudo` só pede
+/// senha: é o modo de falhar mais desagradável do projeto, porque nada está
+/// errado — o módulo simplesmente nunca é chamado, e nenhum log registra uma
+/// chamada que não aconteceu. Só a inspeção dos arquivos revela.
+///
+/// Duas condições, e faltar qualquer uma dá no mesmo. O `sudo_local` é um
+/// drop-in que chegou no macOS Sonoma; num sistema anterior — e o projeto roda
+/// a partir do 13 — o `/etc/pam.d/sudo` não o inclui, e o arquivo fica lá sem
+/// efeito nenhum, parecendo configuração feita.
+func descreveLigacaoComSudo() -> String {
+    let modulo = "/usr/local/lib/pam/pam_phoneauth.so"
+
+    guard FileManager.default.fileExists(atPath: modulo) else {
+        return "módulo não instalado em \(modulo)"
+    }
+
+    let sudo = (try? String(contentsOfFile: "/etc/pam.d/sudo", encoding: .utf8)) ?? ""
+    let local = (try? String(contentsOfFile: "/etc/pam.d/sudo_local", encoding: .utf8)) ?? ""
+
+    let incluiLocal = sudo
+        .split(separator: "\n")
+        .map { $0.trimmingCharacters(in: .whitespaces) }
+        .contains { linha in
+            !linha.hasPrefix("#")
+                && linha.contains("include")
+                && linha.contains("sudo_local")
+        }
+
+    let plugado = { (texto: String) in
+        texto.split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .contains { !$0.hasPrefix("#") && $0.contains("pam_phoneauth") }
+    }
+
+    if plugado(sudo) { return "ligado direto em /etc/pam.d/sudo" }
+
+    switch (incluiLocal, plugado(local)) {
+    case (true, true):
+        return "ligado via /etc/pam.d/sudo_local"
+    case (true, false):
+        return "NÃO ligado — falta a linha do módulo em /etc/pam.d/sudo_local"
+    case (false, true):
+        return "NÃO ligado — sudo_local existe mas /etc/pam.d/sudo não o inclui (macOS anterior ao Sonoma)"
+    case (false, false):
+        return "NÃO ligado — veja docs/instalacao.md, seção 3"
+    }
 }
 
 func commandList() throws {

@@ -50,7 +50,27 @@ sudo phoneauthctl list
 
 ## 3. Plugar no sudo
 
-Só depois de parear. Crie ou edite `/etc/pam.d/sudo_local`:
+Só depois de parear.
+
+### Antes: confira se esta máquina usa `sudo_local`
+
+```sh
+grep sudo_local /etc/pam.d/sudo
+```
+
+O drop-in `sudo_local` chegou no **macOS Sonoma (14)**. Este projeto roda a
+partir do 13, e num Ventura o `/etc/pam.d/sudo` não inclui esse arquivo —
+criá-lo ali não produz efeito nenhum.
+
+Esse é o modo de falhar mais desagradável que existe aqui: tudo parece
+instalado, o app diz "pronto para aprovar", o `sudo` segue pedindo senha, e não
+há mensagem de erro em lugar nenhum, porque o módulo simplesmente nunca é
+chamado. Se você chegou aqui depois de "não acontece nada", comece por este
+comando.
+
+### Se o comando devolveu a linha do include
+
+Crie ou edite `/etc/pam.d/sudo_local`:
 
 ```
 auth  sufficient  /usr/local/lib/pam/pam_phoneauth.so  timeout=30
@@ -58,6 +78,22 @@ auth  sufficient  /usr/local/lib/pam/pam_phoneauth.so  timeout=30
 
 `sudo_local` é um drop-in que sobrevive a atualizações do macOS. Editar
 `/etc/pam.d/sudo` direto seria desfeito no próximo update do sistema.
+
+### Se o comando não devolveu nada
+
+Habilite o include — é o que o Sonoma passou a trazer de fábrica:
+
+```sh
+sudo sed -i '' '1i\
+auth       include        sudo_local
+' /etc/pam.d/sudo
+```
+
+E então crie o `/etc/pam.d/sudo_local` com a mesma linha da seção acima.
+
+Aqui vale o aviso inverso: mexer em `/etc/pam.d/sudo` **pode** ser desfeito por
+uma atualização do macOS. Se um dia o `sudo` voltar a só pedir senha logo depois
+de um update do sistema, é isto — basta repor a linha do include.
 
 ### A parte que não dá para pular
 
