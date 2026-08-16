@@ -151,13 +151,54 @@ Instalado, mas ainda NÃO ativo. Faltam dois passos, nesta ordem.
 
      sudo phoneauthctl pair
 
-2. Só depois de parear, plugue o módulo no sudo. Crie ou edite
-   /etc/pam.d/sudo_local e ponha esta linha ANTES das outras:
+2. Só depois de parear, plugue o módulo no sudo:
+EOF
+
+# `sudo_local` só vale se o `/etc/pam.d/sudo` desta máquina o incluir. O
+# drop-in chegou no Sonoma; num macOS anterior — e este projeto declara
+# suportar 13 — criar o arquivo não produz efeito nenhum, e o sintoma é o pior
+# possível: tudo parece instalado, nada acontece, e não há mensagem de erro em
+# lugar algum para explicar. Vale conferir aqui, uma vez, em vez de deixar cada
+# pessoa descobrir sozinha.
+if grep -qE '^[[:space:]]*auth[[:space:]]+include[[:space:]]+sudo_local' /etc/pam.d/sudo 2>/dev/null; then
+    cat <<'EOF'
+
+   Crie ou edite /etc/pam.d/sudo_local e ponha esta linha ANTES das
+   outras:
 
      auth  sufficient  /usr/local/lib/pam/pam_phoneauth.so  timeout=30
 
    sudo_local é um drop-in que sobrevive a atualizações do macOS; editar
    /etc/pam.d/sudo direto seria desfeito no próximo update.
+EOF
+else
+    cat <<'EOF'
+
+   ATENÇÃO: o /etc/pam.d/sudo desta máquina NÃO inclui sudo_local.
+
+   O drop-in sudo_local chegou no macOS Sonoma. Aqui ele não existe ou
+   não está ligado, então criar o arquivo não teria efeito nenhum — o
+   sudo seguiria pedindo senha sem nunca chamar o módulo, sem erro
+   nenhum para indicar o porquê.
+
+   O caminho nesta máquina é habilitar o include, que é o que o Sonoma
+   passou a trazer de fábrica:
+
+     sudo sed -i '' '1i\
+auth       include        sudo_local
+' /etc/pam.d/sudo
+
+   E então criar /etc/pam.d/sudo_local com:
+
+     auth  sufficient  /usr/local/lib/pam/pam_phoneauth.so  timeout=30
+
+   Editar /etc/pam.d/sudo assim pode ser desfeito por uma atualização do
+   macOS. Se o sudo voltar a só pedir senha depois de um update, é isto:
+   basta repor a linha do include.
+EOF
+fi
+
+cat <<'EOF'
 
 ────────────────────────────────────────────────────────────────────────
 ANTES DE FECHAR ESTE TERMINAL
