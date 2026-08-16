@@ -28,6 +28,8 @@ SAIDA="${3:-$NOME.tar.gz}"
 
 for exigido in "$BINDIR/phoneauthd" "$BINDIR/phoneauthctl" \
                "$RAIZ/macos/pam/pam_phoneauth.so" \
+               "$RAIZ/macos/authplugin/PhoneAuth" \
+               "$RAIZ/macos/authplugin/Info.plist" \
                "$RAIZ/macos/LaunchDaemon/dev.phoneauth.daemon.plist" \
                "$RAIZ/macos/man/phoneauthctl.1" \
                "$RAIZ/scripts/install.sh" "$RAIZ/scripts/uninstall.sh"; do
@@ -42,11 +44,16 @@ trap 'rm -rf "$TMP"' EXIT
 
 STAGE="$TMP/$NOME"
 mkdir -p "$STAGE/macos/.build/release" "$STAGE/macos/pam" \
+         "$STAGE/macos/authplugin" \
          "$STAGE/macos/LaunchDaemon" "$STAGE/macos/man" "$STAGE/scripts"
 
 cp "$BINDIR/phoneauthd"   "$STAGE/macos/.build/release/"
 cp "$BINDIR/phoneauthctl" "$STAGE/macos/.build/release/"
 cp "$RAIZ/macos/pam/pam_phoneauth.so"                     "$STAGE/macos/pam/"
+# Sem o plugin aqui, o install.sh do tarball aborta na verificação de
+# artefatos — ele exige os dois desde que o plugin passou a ser instalado.
+cp "$RAIZ/macos/authplugin/PhoneAuth"                     "$STAGE/macos/authplugin/"
+cp "$RAIZ/macos/authplugin/Info.plist"                    "$STAGE/macos/authplugin/"
 cp "$RAIZ/macos/LaunchDaemon/dev.phoneauth.daemon.plist"  "$STAGE/macos/LaunchDaemon/"
 cp "$RAIZ/macos/man/phoneauthctl.1"                       "$STAGE/macos/man/"
 

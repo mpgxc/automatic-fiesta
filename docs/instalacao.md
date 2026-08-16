@@ -119,6 +119,52 @@ sudo -k && sudo true
 
 O celular deve vibrar mostrando `sudo true`.
 
+## 3b. Diálogos gráficos (opcional, e com um custo diferente)
+
+O módulo PAM cobre `sudo` e `su`. Os diálogos do tipo "Os Ajustes do Sistema
+querem fazer alterações" **não passam por PAM** — vão pelo SecurityAgent. Para
+eles existe um plugin separado, instalado junto mas **inativo**:
+
+```sh
+sudo phoneauthctl authplugin status
+sudo phoneauthctl authplugin enable          # padrão: system.preferences
+```
+
+### Leia isto antes de ativar
+
+Um mecanismo de autorização **não tem o degrau `sufficient` do PAM**. O primeiro
+mecanismo que diz "não" encerra a avaliação, e não existe resultado que
+signifique "não sei, pergunte a outro".
+
+Consequência: enquanto o plugin estiver ativo para um direito, **esse direito
+fica indisponível se o celular não responder**. Não é bug, é a forma do
+mecanismo — e é a diferença que separa isto do módulo PAM, que sempre cai para a
+senha.
+
+A saída de emergência é deliberadamente outra pilha. `sudo` continua sendo PAM,
+com queda para senha, então isto funciona em qualquer situação:
+
+```sh
+sudo phoneauthctl authplugin disable
+```
+
+Por isso o `enable` **recusa** direitos dos quais o próprio resgate depende —
+`config.modify.*`, `system.login.*`, `authenticate` e `system.privilege.admin`.
+Ativar em `config.modify.*` seria uma armadilha perfeita: quebraria o caminho de
+saída no exato momento em que ele passa a ser necessário.
+
+O plugin não injeta senha nenhuma: responde só "permitido" ou "negado". É o que
+o mantém fora do problema descrito em
+[docs/modelo-de-ameacas.md](modelo-de-ameacas.md), onde cobrir os direitos que
+exigem credencial obrigaria o Mac a guardar sua senha de login em disco.
+
+### O que ele não cobre
+
+Prompts de **LocalAuthentication** — o Chrome pedindo Touch ID para preencher
+uma senha do Keychain, por exemplo. Esses são resolvidos dentro do processo que
+pede, com a UI desenhada pelo sistema, e não há ponto de extensão para
+terceiros. Não é limitação deste projeto: a API não existe.
+
 ## 4. Desbloqueio de tela (opcional)
 
 Por padrão o protetor de tela usa a UI da janela de login, que não passa por
