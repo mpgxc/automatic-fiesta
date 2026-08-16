@@ -565,8 +565,55 @@ func commandAuthPluginDisable(_ direito: String) throws {
     print("'\(direito)' restaurado para a regra original.")
 }
 
+/// Diz se o bundle tem chance de ser carregado — e não só se ele está no disco.
+///
+/// O SecurityAgentHelper é um *platform binary*, e o macOS aplica Library
+/// Validation nele: um processo platform não carrega código que não seja
+/// platform. Um bundle sem assinatura da Apple é recusado no `dlopen`, com
+/// "mapping process is a platform binary, but mapped file is not", e o pedido
+/// de autorização segue o fluxo normal como se o plugin não existisse.
+///
+/// Nada nisso é visível para quem instalou: não há diálogo, não há erro, o
+/// arquivo está lá. Só o log do sistema conta. Por isso o `status` verifica —
+/// descobrir isto por conta própria custa horas.
+func assinaturaDoPlugin() -> String {
+    let binario = "\(caminhoPlugin)/Contents/MacOS/PhoneAuth"
+    guard FileManager.default.fileExists(atPath: binario) else { return "ausente" }
+
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+    p.arguments = ["-dv", binario]
+    let erro = Pipe()
+    p.standardError = erro
+    p.standardOutput = FileHandle.nullDevice
+    guard (try? p.run()) != nil else { return "indeterminada" }
+    let saida = String(data: erro.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    p.waitUntilExit()
+
+    if p.terminationStatus != 0 || saida.contains("not signed") {
+        return "NÃO ASSINADO"
+    }
+    return saida.contains("Authority=Apple") ? "assinado pela Apple" : "assinado (não pela Apple)"
+}
+
 func commandAuthPluginStatus() throws {
     print("plugin instalado: \(FileManager.default.fileExists(atPath: caminhoPlugin) ? "sim" : "não")")
+
+    let assinatura = assinaturaDoPlugin()
+    print("assinatura:       \(assinatura)")
+    if assinatura != "assinado pela Apple" && assinatura != "ausente" {
+        print("")
+        print("  O SecurityAgentHelper roda com Library Validation e só carrega")
+        print("  código assinado pela Apple. Este bundle será recusado no dlopen,")
+        print("  em silêncio, e os diálogos gráficos seguirão pedindo a senha.")
+        print("  Confirme com:")
+        print("")
+        print("    sudo log show --predicate 'process == \"SecurityAgentHelper\"' \\")
+        print("      --last 10m --info | grep -i 'platform binary'")
+        print("")
+        print("  O módulo PAM (sudo, su) não passa por isto e segue funcionando.")
+        print("")
+    }
 
     let backups = (try? FileManager.default.contentsOfDirectory(atPath: diretorioBackup)) ?? []
     let ativos = backups.filter { $0.hasSuffix(".plist") }

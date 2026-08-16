@@ -158,6 +158,38 @@ o mantém fora do problema descrito em
 [docs/modelo-de-ameacas.md](modelo-de-ameacas.md), onde cobrir os direitos que
 exigem credencial obrigaria o Mac a guardar sua senha de login em disco.
 
+### Antes de tudo: ele provavelmente não vai carregar
+
+O `SecurityAgentHelper`, que hospeda os mecanismos de autorização, é um
+*platform binary*, e o macOS aplica **Library Validation** nele: um processo
+platform só carrega código também assinado pela Apple. Um bundle de terceiro é
+recusado no `dlopen`, com
+
+```
+mapping process is a platform binary, but mapped file is not
+```
+
+Este projeto **não é assinado nem notarizado** — não há conta paga no Apple
+Developer Program. Então o plugin é recusado, **em silêncio**: nenhum diálogo,
+nenhum erro, o arquivo continua no disco e o `enable` reporta sucesso, porque
+editar o authorization database realmente funcionou. O que não acontece é o
+carregamento.
+
+Confirme no seu Mac:
+
+```sh
+sudo log show --predicate 'process == "SecurityAgentHelper"' \
+  --last 10m --info | grep -i 'platform binary'
+```
+
+O `phoneauthctl authplugin status` também avisa: ele roda `codesign` no bundle e
+diz se a assinatura é da Apple.
+
+Uma assinatura Developer ID comum **não** resolve — a validação exige platform,
+que é exclusivo da Apple. Não há caminho conhecido para um projeto sem acordo
+com ela. O módulo PAM (`sudo`, `su`) não passa por nada disso e segue
+funcionando normalmente.
+
 ### O que ele não cobre
 
 Prompts de **LocalAuthentication** — o Chrome pedindo Touch ID para preencher
